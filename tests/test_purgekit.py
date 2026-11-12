@@ -533,3 +533,144 @@ def test_short_path_and_terminal_resize(tmp_path: Path, monkeypatch) -> None:
     )
     assert prepare_terminal_window(min_cols=148, min_rows=42) is True
     assert "\x1b[8;42;148t" in fake_tty.getvalue()
+
+
+def test_file_search_and_critical_folder_protection(tmp_path: Path) -> None:
+    from purgekit.filesearch import search_files
+    from purgekit.safety import is_sip_protected_path
+    from purgekit.uninstaller import execute_path_removal
+
+    home = tmp_path / "home"
+    downloads = home / "Downloads"
+    documents = home / "Documents"
+    lib_caches = home / "Library" / "Caches"
+    sys_root = tmp_path / "sys_root"
+    downloads.mkdir(parents=True)
+    documents.mkdir(parents=True)
+    lib_caches.mkdir(parents=True)
+    sys_root.mkdir(parents=True)
+
+    # Critical standard folders themselves must remain protected
+    assert is_sip_protected_path(downloads, home=home) is True
+    assert is_sip_protected_path(documents, home=home) is True
+
+    target_file = downloads / "SpotifyInstaller.dmg"
+    target_file.write_bytes(b"dmgdata" * 100)
+    target_dir = lib_caches / "SpotifyCache"
+    target_dir.mkdir()
+    (target_dir / "chunk.bin").write_bytes(b"12345")
+
+    # Search all in user scope
+    results = search_files(
+        "Spotify",
+        scope="user",
+        item_type="all",
+        home=home,
+        system_root=sys_root,
+        use_spotlight=False,
+    )
+    matched_paths = {item.path for item in results}
+    assert target_file in matched_paths
+    assert target_dir in matched_paths
+
+    # Critical folder search by name must NOT return ~/Downloads itself
+    dl_results = search_files(
+        "Downloads",
+        scope="user",
+        item_type="dir",
+        home=home,
+        system_root=sys_root,
+        use_spotlight=False,
+    )
+    assert downloads not in {item.path for item in dl_results}
+
+    # Filter by item_type and scope
+    file_only = search_files(
+        "Spotify",
+        scope="user",
+        item_type="file",
+        home=home,
+        system_root=sys_root,
+        use_spotlight=False,
+    )
+    assert {item.path for item in file_only} == {target_file}
+
+    lib_only = search_files(
+        "Spotify",
+        scope="library",
+        item_type="all",
+        home=home,
+        system_root=sys_root,
+        use_spotlight=False,
+    )
+    assert {item.path for item in lib_only} == {target_dir}
+
+    # Dry-run & real permanent path removal
+    history_dir = home / ".purgekit_history"
+    dry_outcome = execute_path_removal(
+        [target_file, target_dir],
+        label="TestCleanup",
+        permanent=True,
+        dry_run=True,
+        history_dir=history_dir,
+        home=home,
+    )
+    assert dry_outcome.dry_run is True
+    assert target_file.exists() and target_dir.exists()
+
+    real_outcome = execute_path_removal(
+        [target_file, target_dir],
+        label="TestCleanup",
+        permanent=True,
+        dry_run=False,
+        history_dir=history_dir,
+        home=home,
+    )
+    assert real_outcome.failed == []
+    assert not target_file.exists()
+    assert not target_dir.exists()
+    assert real_outcome.manifest_path is not None and real_outcome.manifest_path.exists()
+
+
+def test_tui_file_search_from_app_search(tmp_path: Path) -> None:
+    import asyncio
+    from textual.widgets import Input, SelectionList, TabbedContent
+    from purgekit.ui.tui import PurgeKitApp
+
+    apps_dir = tmp_path / "Applications"
+    apps_dir.mkdir()
+    home = tmp_path / "home"
+    downloads = home / "Downloads"
+    downloads.mkdir(parents=True)
+    target = downloads / "Fatura2026.pdf"
+    target.write_text("pdf", encoding="utf-8")
+    sys_root = tmp_path / "sys_root"
+    sys_root.mkdir()
+
+    app = PurgeKitApp(
+        app_dirs=[apps_dir],
+        home=home,
+        system_root=sys_root,
+        history_dir=home / ".purgekit_history",
+        config_path=home / ".purgekit_config.json",
+    )
+
+    async def scenario() -> None:
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause(0.2)
+            search_input = app.query_one("#search-input", Input)
+            search_input.focus()
+            search_input.value = "Fatura2026"
+            await pilot.press("enter")
+            for _ in range(25):
+                await pilot.pause(0.1)
+                files_list = app.query_one("#files-list", SelectionList)
+                if len(files_list.options) > 0:
+                    break
+            tabs = app.query_one("#main-tabs", TabbedContent)
+            assert tabs.active == "tab-files"
+            files_list = app.query_one("#files-list", SelectionList)
+            assert len(files_list.options) >= 1
+            assert any(str(target) == str(opt.value) for opt in files_list.options)
+
+    asyncio.run(scenario())

@@ -14,12 +14,13 @@ from rich.table import Table
 
 from purgekit import __version__
 from purgekit.discovery import find_installed_apps, parse_app_bundle, resolve_app
+from purgekit.filesearch import search_files
 from purgekit.homebrew import find_brew_binary, run_brew_uninstall_cask
 from purgekit.models import AppInfo, RiskLevel, ScanMode
 from purgekit.packages import find_matching_pkg_ids, inspect_pkg_receipt
 from purgekit.safety import check_full_disk_access
 from purgekit.scanner import scan_app_leftovers, scan_orphans
-from purgekit.uninstaller import default_history_dir, execute_removal, load_history
+from purgekit.uninstaller import default_history_dir, execute_path_removal, execute_removal, load_history
 from purgekit.utils import format_bytes
 
 app = typer.Typer(
@@ -431,6 +432,92 @@ def orphans(
         )
     console.print(table)
     console.print(f"Toplam yetim artık boyutu: [bold]{format_bytes(total)}[/bold]")
+
+
+@app.command()
+def find(
+    query: str = typer.Argument(..., help="Aranacak dosya veya klasör adı."),
+    scope: str = typer.Option("user", "--scope", "-s", help="Arama kapsamı: user | library | all"),
+    item_type: str = typer.Option("all", "--type", "-t", help="Tür filtresi: all | file | dir"),
+    limit: int = typer.Option(60, "--limit", "-n", help="Maksimum sonuç sayısı."),
+    trash: bool = typer.Option(False, "--trash", help="Seçilen numaraları etkileşimli olarak Çöp Kutusu'na taşır."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="--trash ile silmeden önizleme yapar."),
+    admin: bool = typer.Option(False, "--admin", help="/Library gibi sistem yolları için yönetici izni ister."),
+) -> None:
+    """Mac'te dosya ve klasörleri (Spotlight + ~/Library + Kullanıcı dizinleri) arar ve isteğe bağlı kaldırır."""
+    with console.status(f"'{query}' için dosya ve klasörler aranıyor ({scope})..."):
+        items = search_files(query=query, scope=scope, item_type=item_type, limit=limit)
+
+    if not items:
+        console.print(f"[yellow]'{query}' ile eşleşen dosya veya klasör bulunamadı.[/yellow]")
+        return
+
+    table = Table(title=f"Bulunan Dosya & Klasörler ({len(items)})", box=box.ROUNDED)
+    table.add_column("#", justify="right", style="cyan")
+    table.add_column("Tür", justify="center")
+    table.add_column("Risk")
+    table.add_column("Boyut", justify="right")
+    table.add_column("Kaynak", style="dim")
+    table.add_column("Yol")
+
+    total = 0
+    for idx, item in enumerate(items, start=1):
+        total += item.size_bytes
+        style = RISK_STYLE[item.risk]
+        admin_tag = " [admin]" if item.requires_admin else ""
+        table.add_row(
+            str(idx),
+            "Klasör" if item.is_dir else "Dosya",
+            f"[{style}]{item.risk.value}{admin_tag}[/{style}]",
+            format_bytes(item.size_bytes),
+            item.source,
+            str(item.path),
+        )
+    console.print(table)
+    console.print(f"Toplam bulunan boyut: [bold]{format_bytes(total)}[/bold]")
+
+    if not trash:
+        return
+
+    raw = Prompt.ask("Çöp Kutusu'na taşınacak numaralar (ör. 1,3 veya 'all', iptal için Enter)", default="").strip()
+    if not raw:
+        return
+    if raw.lower() == "all":
+        selected_paths = [i.path for i in items]
+    else:
+        selected_paths = []
+        for token in raw.split(","):
+            token = token.strip()
+            if token.isdigit():
+                idx = int(token)
+                if 1 <= idx <= len(items):
+                    selected_paths.append(items[idx - 1].path)
+
+    if not selected_paths:
+        console.print("[yellow]Geçerli öğe seçilmedi.[/yellow]")
+        return
+
+    if dry_run:
+        outcome = execute_path_removal(selected_paths, label="FileCleanup", dry_run=True, allow_admin=admin)
+        console.print(
+            Panel(
+                f"[cyan]DRY-RUN:[/cyan] {len(outcome.trashed)} öğe Çöp Kutusu'na taşınacaktı ({format_bytes(outcome.reclaimed_bytes)}).",
+                expand=False,
+            )
+        )
+        return
+
+    if not Confirm.ask(f"Seçili {len(selected_paths)} öğe Çöp Kutusu'na taşınacak. Onaylıyor musunuz?", default=False):
+        console.print("[yellow]İşlem iptal edildi.[/yellow]")
+        return
+
+    outcome = execute_path_removal(selected_paths, label="FileCleanup", dry_run=False, allow_admin=admin)
+    console.print(
+        f"[green]Tamamlandı:[/green] {len(outcome.trashed)} öğe Çöp Kutusu'na taşındı ({format_bytes(outcome.reclaimed_bytes)})."
+    )
+    if outcome.failed:
+        for p, err in outcome.failed:
+            console.print(f"  [red]- {p}:[/red] {err}")
 
 
 @app.command()

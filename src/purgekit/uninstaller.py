@@ -243,6 +243,58 @@ def execute_removal(
     return outcome
 
 
+def execute_path_removal(
+    paths: Sequence[Path],
+    label: str = "FileCleanup",
+    permanent: bool = False,
+    dry_run: bool = True,
+    allow_admin: bool = False,
+    history_dir: Optional[Path] = None,
+    home: Optional[Path] = None,
+) -> RemovalOutcome:
+    """Safely remove arbitrary selected files/folders via the shared safety pipeline."""
+    outcome = RemovalOutcome(
+        app_name=label,
+        bundle_id=None,
+        dry_run=dry_run,
+    )
+    validated = _validate_targets(paths, outcome, home=home)
+    if dry_run:
+        return _populate_dry_run(validated, outcome, permanent=permanent)
+
+    standard_targets: List[Path] = []
+    admin_targets: List[Path] = []
+    for p in validated:
+        if requires_admin_privileges(p, home=home):
+            admin_targets.append(p)
+        else:
+            standard_targets.append(p)
+
+    _remove_standard_targets(standard_targets, outcome, permanent=permanent)
+
+    if admin_targets:
+        if not allow_admin:
+            for p in admin_targets:
+                outcome.failed.append((p, "Yönetici izni gerektirir (--admin ile çalıştırın)."))
+        else:
+            sizes = {p: get_path_size(p) for p in admin_targets}
+            ok, err_msg = _run_privileged_removal(admin_targets, permanent=permanent, home=home)
+            if ok:
+                for p in admin_targets:
+                    if permanent:
+                        outcome.deleted_permanently.append(p)
+                    else:
+                        outcome.trashed.append(p)
+                    outcome.reclaimed_bytes += sizes[p]
+            else:
+                for p in admin_targets:
+                    outcome.failed.append((p, err_msg))
+
+    target_history = history_dir or default_history_dir(home=home)
+    outcome.manifest_path = _write_manifest(outcome, target_history)
+    return outcome
+
+
 def execute_orphan_removal(
     paths: Sequence[Path],
     permanent: bool = False,
@@ -251,19 +303,15 @@ def execute_orphan_removal(
     home: Optional[Path] = None,
 ) -> RemovalOutcome:
     """Safely remove selected orphan leftover items via the shared safety pipeline."""
-    outcome = RemovalOutcome(
-        app_name="OrphanCleanup",
-        bundle_id=None,
+    return execute_path_removal(
+        paths=paths,
+        label="OrphanCleanup",
+        permanent=permanent,
         dry_run=dry_run,
+        allow_admin=False,
+        history_dir=history_dir,
+        home=home,
     )
-    validated = _validate_targets(paths, outcome, home=home)
-    if dry_run:
-        return _populate_dry_run(validated, outcome, permanent=permanent)
-
-    _remove_standard_targets(validated, outcome, permanent=permanent)
-    target_history = history_dir or default_history_dir(home=home)
-    outcome.manifest_path = _write_manifest(outcome, target_history)
-    return outcome
 
 
 def load_history(history_dir: Optional[Path] = None, limit: int = 20) -> List[Dict]:

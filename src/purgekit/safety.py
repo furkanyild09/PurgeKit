@@ -55,6 +55,13 @@ def _critical_roots(home: Optional[Path] = None) -> Set[str]:
         "/Library/Logs",
         str(user_home),
         str(user_home / "Applications"),
+        str(user_home / "Desktop"),
+        str(user_home / "Documents"),
+        str(user_home / "Downloads"),
+        str(user_home / "Movies"),
+        str(user_home / "Music"),
+        str(user_home / "Pictures"),
+        str(user_home / "Public"),
         str(user_home / "Library"),
     }
     for sub in (

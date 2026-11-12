@@ -104,6 +104,17 @@ class OrphanItem:
     shared_vendor: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class FileSearchItem:
+    path: Path
+    name: str
+    is_dir: bool
+    size_bytes: int
+    source: str
+    risk: RiskLevel
+    requires_admin: bool = False
+
+
 @dataclass
 class RemovalOutcome:
     app_name: str

@@ -7,7 +7,7 @@ A smart application uninstaller and deep leftover scanner for **macOS** (CLI & i
 
 ## Features
 
-- **Dual-Pane Textual TUI (`purgekit ui`):** Built-in theme switcher (`Tokyo Night`, `Dark`, `Nord`, `Catppuccin`, `Dracula`, `Light`), disk-usage metric cards, live search/sorting, checkbox selection, and automatic terminal window sizing.
+- **Dual-Pane Textual TUI (`purgekit`):** Built-in theme switcher (`Tokyo Night`, `Dark`, `Nord`, `Catppuccin`, `Dracula`, `Light`), disk-usage metric cards, live search/sorting, checkbox selection, integrated **File & Folder Search** tab, and automatic terminal window sizing.
 - **Application Discovery:** Scans `/Applications` and `~/Applications` (including subdirectories), reads `Info.plist` metadata, and detects Mac App Store receipts and Homebrew Cask installations (`zap` stanzas included).
 - **3-Tier Leftover Scanner:** Supports `safe`, `moderate`, and `advanced` modes across `~/Library`, `/Library`, `LaunchAgents`, `LaunchDaemons`, `Group Containers` (via `codesign` entitlements), and `.pkg` receipts.
 - **Safety Guardrails:**
@@ -74,7 +74,8 @@ purgekit
 ```
 
 **Keyboard Shortcuts:**
-- `/` — Search apps (`Escape` to return to the table)
+- `/` — Search apps (press `Enter` or `f` to search matching files/folders across macOS)
+- `f` — Jump to **File Search** (Spotlight + `~/Library` + user folders)
 - `t` — Switch theme (persisted in `~/.purgekit/config.json`)
 - `s` — Toggle sort order (`Name ↑` / `Size ↓`)
 - `m` — Cycle scan mode (`safe` / `moderate` / `advanced`)
@@ -91,6 +92,7 @@ purgekit
 ```bash
 purgekit doctor                            # Check Full Disk Access, codesign, pkgutil, launchctl, brew
 purgekit list --sort size                  # List installed apps sorted by disk size
+purgekit find "installer.dmg" --trash      # Find files/folders (Spotlight + Library) & optionally trash them
 purgekit scan "Spotify" --mode moderate    # Scan leftovers without deleting anything
 purgekit pkg "FortiClient" --files         # Inspect matching .pkg receipts and external files
 purgekit uninstall "Spotify" --dry-run     # Preview an uninstall safely
