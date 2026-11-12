@@ -378,6 +378,11 @@ class PurgeKitApp(App[None]):
         self._lens_seq = 0
         self._lens_scanning = False
         self._lens_loaded_once = False
+        self._orphans_seq = 0
+        self._orphans_scanning = False
+        self._sweep_seq = 0
+        self._sweep_scanning = False
+        self._sweep_loaded_once = False
 
     def _load_saved_theme(self) -> str:
         try:
@@ -457,10 +462,10 @@ class PurgeKitApp(App[None]):
             with TabPane("Space Sweep", id="tab-sweep"):
                 with Vertical(id="sweep-container"):
                     with Horizontal(id="sweep-bar"):
-                        yield Button("Scan Space Sweep", id="btn-scan-sweep", variant="primary")
+                        yield Button("Refresh Sweep", id="btn-scan-sweep", variant="primary")
                         yield Button(f"Min Size: {self._sweep_min_mb} MB", id="btn-sweep-min")
                     yield Static(
-                        "Click 'Scan Space Sweep' to find old .dmg/.pkg installers, Xcode/Homebrew/npm/pip caches, and large files.",
+                        "Automatically finds old .dmg/.pkg installers, Xcode/Homebrew/npm/pip caches, and large files when opened.",
                         id="sweep-summary",
                     )
                     yield SelectionList(id="sweep-list")
@@ -501,10 +506,10 @@ class PurgeKitApp(App[None]):
                         yield Button("Trash Selected", id="btn-lens-clean", variant="error")
             with TabPane("Orphans", id="tab-orphans"):
                 with Vertical(id="orphans-container"):
-                    yield Static("Click 'Scan Orphans' to detect orphaned leftovers from removed apps.", id="orphans-summary")
+                    yield Static("Orphaned leftovers from removed apps scan automatically when this tab opens.", id="orphans-summary")
                     yield SelectionList(id="orphans-list")
                     with Horizontal(id="orphans-action-bar"):
-                        yield Button("Scan Orphans", id="btn-scan-orphans", variant="primary")
+                        yield Button("Refresh Orphans", id="btn-scan-orphans", variant="primary")
                         yield Button("Reveal in Finder", id="btn-orphans-reveal")
                         yield Button("Dry-Run", id="btn-orphans-dry-run")
                         yield Button("Trash Selected Orphans", id="btn-orphans-clean", variant="error")
@@ -740,8 +745,18 @@ class PurgeKitApp(App[None]):
         sel_list.add_options(options)
         self._set_status(f"[green]●[/green] {app_info.name}: {len(result.leftovers)} leftover(s) listed.")
 
+    def _start_orphans_scan(self) -> None:
+        self._orphans_seq += 1
+        self._orphans_scanning = True
+        seq = self._orphans_seq
+        self.query_one("#orphans-summary", Static).update(
+            "[yellow]⟳[/yellow] Scanning ~/Library for orphaned leftovers..."
+        )
+        self._scan_orphans_worker(seq)
+
     @work(thread=True)
-    def _scan_orphans_worker(self) -> None:
+    def _scan_orphans_worker(self, seq: Optional[int] = None) -> None:
+        active_seq = self._orphans_seq if seq is None else seq
         self.call_from_thread(self._set_status, "[yellow]⟳[/yellow] Scanning orphaned leftovers...")
         apps = self._all_apps or find_installed_apps(
             app_dirs=self._app_dirs,
@@ -751,9 +766,12 @@ class PurgeKitApp(App[None]):
             home=self._home,
         )
         items = scan_orphans(apps, home=self._home)
-        self.call_from_thread(self._on_orphans_loaded, items)
+        self.call_from_thread(self._on_orphans_loaded, items, active_seq)
 
-    def _on_orphans_loaded(self, items: List[OrphanItem]) -> None:
+    def _on_orphans_loaded(self, items: List[OrphanItem], seq: int) -> None:
+        if seq != self._orphans_seq:
+            return
+        self._orphans_scanning = False
         self._orphans = items
         total = sum(i.size_bytes for i in items)
         self.query_one("#orphans-summary", Static).update(
@@ -899,16 +917,30 @@ class PurgeKitApp(App[None]):
         if self._current_app:
             self._start_app_scan(self._current_app)
 
+    def _start_sweep_scan(self) -> None:
+        self._sweep_seq += 1
+        self._sweep_scanning = True
+        seq = self._sweep_seq
+        self.query_one("#sweep-summary", Static).update(
+            f"[yellow]⟳[/yellow] Scanning installers, dev caches, and large files (>= {self._sweep_min_mb} MB)..."
+        )
+        self._scan_sweep_worker(seq)
+
     @work(thread=True)
-    def _scan_sweep_worker(self) -> None:
+    def _scan_sweep_worker(self, seq: Optional[int] = None) -> None:
+        active_seq = self._sweep_seq if seq is None else seq
         self.call_from_thread(
             self._set_status,
             f"[yellow]⟳[/yellow] Scanning installers, dev caches, and large files (>= {self._sweep_min_mb} MB)...",
         )
         items = scan_sweep_targets(min_mb=self._sweep_min_mb, home=self._home)
-        self.call_from_thread(self._on_sweep_loaded, items)
+        self.call_from_thread(self._on_sweep_loaded, items, active_seq)
 
-    def _on_sweep_loaded(self, items: List[SweepItem]) -> None:
+    def _on_sweep_loaded(self, items: List[SweepItem], seq: int) -> None:
+        if seq != self._sweep_seq:
+            return
+        self._sweep_scanning = False
+        self._sweep_loaded_once = True
         self._sweep_items = items
         total = sum(i.size_bytes for i in items)
         self.query_one("#sweep-summary", Static).update(
@@ -939,7 +971,7 @@ class PurgeKitApp(App[None]):
         lbl = "1 GB" if self._sweep_min_mb == 1024 else f"{self._sweep_min_mb} MB"
         self.query_one("#btn-sweep-min", Button).label = f"Min Size: {lbl}"
         if self._sweep_items:
-            self._scan_sweep_worker()
+            self._start_sweep_scan()
 
     def _start_startup_scan(self) -> None:
         self._startup_seq += 1
@@ -1119,12 +1151,18 @@ class PurgeKitApp(App[None]):
 
     def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
         pane_id = event.pane.id if event.pane else ""
-        if pane_id == "tab-startup":
+        if pane_id == "tab-sweep":
+            if not self._sweep_loaded_once and not self._sweep_scanning:
+                self._start_sweep_scan()
+        elif pane_id == "tab-startup":
             if not self._startup_scanning:
                 self._start_startup_scan()
         elif pane_id == "tab-lens":
             if not self._lens_loaded_once and not self._lens_scanning:
                 self._start_lens_scan()
+        elif pane_id == "tab-orphans":
+            if not self._orphans_scanning:
+                self._start_orphans_scan()
 
     def _lens_go_up(self) -> None:
         parent = self._lens_dir.parent
@@ -1167,11 +1205,11 @@ class PurgeKitApp(App[None]):
     def action_refresh_all(self) -> None:
         active = self._active_tab_id()
         if active == "tab-orphans":
-            self._scan_orphans_worker()
+            self._start_orphans_scan()
         elif active == "tab-files":
             self._start_file_search(self.query_one("#file-search-input", Input).value)
         elif active == "tab-sweep":
-            self._scan_sweep_worker()
+            self._start_sweep_scan()
         elif active == "tab-startup":
             self._start_startup_scan()
         elif active == "tab-lens":
@@ -1282,9 +1320,9 @@ class PurgeKitApp(App[None]):
         if active in self._PATH_TAB_CONFIG:
             list_id, label, _, modal_title = self._PATH_TAB_CONFIG[active]
             refresh_callbacks = {
-                "tab-orphans": self._scan_orphans_worker,
+                "tab-orphans": self._start_orphans_scan,
                 "tab-files": lambda: self._start_file_search(self.query_one("#file-search-input", Input).value),
-                "tab-sweep": self._scan_sweep_worker,
+                "tab-sweep": self._start_sweep_scan,
                 "tab-startup": self._start_startup_scan,
                 "tab-lens": lambda: self._start_lens_scan(self.query_one("#lens-path-input", Input).value),
             }
@@ -1386,9 +1424,9 @@ class PurgeKitApp(App[None]):
         elif btn_id in ("btn-uninstall", "btn-orphans-clean", "btn-files-clean", "btn-sweep-clean", "btn-startup-clean", "btn-lens-clean"):
             self.action_request_uninstall()
         elif btn_id == "btn-scan-orphans":
-            self._scan_orphans_worker()
+            self._start_orphans_scan()
         elif btn_id == "btn-scan-sweep":
-            self._scan_sweep_worker()
+            self._start_sweep_scan()
         elif btn_id == "btn-sweep-min":
             self._cycle_sweep_min()
         elif btn_id == "btn-scan-startup":

@@ -835,6 +835,9 @@ def test_tui_new_tabs_and_reveal_in_finder(tmp_path: Path, monkeypatch) -> None:
     apps_dir.mkdir()
     (home / "Downloads").mkdir(parents=True)
     (home / "Library" / "LaunchAgents").mkdir(parents=True)
+    orphan_cache = home / "Library" / "Caches" / "com.deleted.ghostapp"
+    orphan_cache.mkdir(parents=True)
+    (orphan_cache / "blob.bin").write_bytes(b"z" * 4096)
     sys_root.mkdir()
 
     _create_fake_app(apps_dir, "DemoTool", "com.demo.tool")
@@ -864,13 +867,15 @@ def test_tui_new_tabs_and_reveal_in_finder(tmp_path: Path, monkeypatch) -> None:
 
         async with app.run_test(size=(150, 42)) as pilot:
             await pilot.pause(0.2)
-            # Test Space Sweep tab
+            # Space Sweep tab auto-scans when opened
             await switch_tab("tab-sweep", "#btn-scan-sweep")
-            await pilot.click("#btn-scan-sweep")
             for _ in range(25):
                 await pilot.pause(0.05)
                 if app.query_one("#sweep-list", SelectionList).option_count > 0:
                     break
+            assert app.query_one("#sweep-list", SelectionList).option_count >= 1
+            await pilot.click("#btn-scan-sweep")
+            await pilot.pause(0.15)
             assert app.query_one("#sweep-list", SelectionList).option_count >= 1
 
             # Startup Services tab auto-scans immediately when opened, and supports 'o' Reveal in Finder
@@ -902,6 +907,17 @@ def test_tui_new_tabs_and_reveal_in_finder(tmp_path: Path, monkeypatch) -> None:
             await pilot.click("#btn-run-lens")
             await pilot.pause(0.15)
             assert app.query_one("#lens-list", SelectionList).option_count >= 2
+
+            # Orphans tab auto-scans immediately when opened and also refreshes cleanly
+            await switch_tab("tab-orphans", "#btn-scan-orphans")
+            for _ in range(25):
+                await pilot.pause(0.05)
+                if app.query_one("#orphans-list", SelectionList).option_count >= 1:
+                    break
+            assert app.query_one("#orphans-list", SelectionList).option_count >= 1
+            await pilot.click("#btn-scan-orphans")
+            await pilot.pause(0.15)
+            assert app.query_one("#orphans-list", SelectionList).option_count >= 1
 
     asyncio.run(scenario())
 
