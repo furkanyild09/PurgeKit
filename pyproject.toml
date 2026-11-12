@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "purgekit"
+version = "0.1.0"
+description = "Revo Uninstaller inspired smart application uninstaller and leftover scanner for macOS"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+keywords = ["macos", "uninstaller", "cleaner", "cli", "tui", "textual"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "typer>=0.12.0",
+    "rich>=13.7.0",
+    "send2trash>=1.8.3",
+    "psutil>=5.9.0",
+    "textual>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+purgekit = "purgekit.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/furkanyild09/PurgeKit"
+Repository = "https://github.com/furkanyild09/PurgeKit"
+Issues = "https://github.com/furkanyild09/PurgeKit/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
