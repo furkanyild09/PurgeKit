@@ -183,6 +183,19 @@ class PurgeKitApp(App[None]):
     Screen {
         background: $background;
     }
+    HeaderIcon {
+        width: auto;
+        min-width: 12;
+        padding: 0 1;
+        background: $accent;
+        color: $background;
+        text-style: bold;
+        content-align: center middle;
+    }
+    HeaderIcon:hover {
+        background: $warning;
+        color: $background;
+    }
     #toolbar {
         height: 3;
         padding: 0 1;
@@ -370,7 +383,7 @@ class PurgeKitApp(App[None]):
         return f"🎨 Theme: {display}"
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield Header(icon="☰ Commands")
         with Horizontal(id="toolbar"):
             yield Input(placeholder="Search apps (or press Enter to search Mac files)...", id="search-input")
             yield Button("🔍 Find Files", id="btn-search-files")

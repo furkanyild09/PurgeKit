@@ -305,7 +305,11 @@ def test_tui_smoke_flow(tmp_path: Path) -> None:
             assert tui._current_scan is not None
             assert tui._current_scan.app.name == "AlphaPlayer"
 
-            # Prominent theme button & cycling via 't'
+            # Prominent top-left HeaderIcon button & theme button
+            from textual.widgets._header import HeaderIcon
+
+            header_icon = tui.query_one(HeaderIcon)
+            assert "Commands" in str(header_icon.render())
             theme_btn = tui.query_one("#btn-theme", Button)
             assert "Theme:" in str(theme_btn.label)
             initial_theme = tui.theme
