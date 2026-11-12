@@ -372,6 +372,12 @@ class PurgeKitApp(App[None]):
         self._lens_entries: List[SpaceLensEntry] = []
         self._scan_seq = 0
         self._file_search_seq = 0
+        self._startup_seq = 0
+        self._startup_scanning = False
+        self._startup_loaded_once = False
+        self._lens_seq = 0
+        self._lens_scanning = False
+        self._lens_loaded_once = False
 
     def _load_saved_theme(self) -> str:
         try:
@@ -466,12 +472,12 @@ class PurgeKitApp(App[None]):
             with TabPane("Startup Services", id="tab-startup"):
                 with Vertical(id="startup-container"):
                     yield Static(
-                        "Click 'Scan Services' to inspect third-party LaunchAgents & LaunchDaemons.",
+                        "Third-party LaunchAgents & LaunchDaemons scan automatically when this tab opens.",
                         id="startup-summary",
                     )
                     yield SelectionList(id="startup-list")
                     with Horizontal(id="startup-action-bar"):
-                        yield Button("Scan Services", id="btn-scan-startup", variant="primary")
+                        yield Button("Refresh Services", id="btn-scan-startup", variant="primary")
                         yield Button("Select All / None", id="btn-startup-toggle-all")
                         yield Button("Unload Selected", id="btn-startup-unload", variant="warning")
                         yield Button("Reveal in Finder", id="btn-startup-reveal")
@@ -485,7 +491,7 @@ class PurgeKitApp(App[None]):
                         yield Button("Up", id="btn-lens-up")
                         yield Button("Drill Selected", id="btn-lens-drill")
                     yield Static(
-                        "Inspect disk footprint inside any directory and drill down into heavy folders.",
+                        "Measures physical SSD space per subfolder (excluding cloud-only placeholders). Highlight a folder and click 'Drill Selected' to inspect inside.",
                         id="lens-summary",
                     )
                     yield SelectionList(id="lens-list")
@@ -935,13 +941,27 @@ class PurgeKitApp(App[None]):
         if self._sweep_items:
             self._scan_sweep_worker()
 
+    def _start_startup_scan(self) -> None:
+        self._startup_seq += 1
+        self._startup_scanning = True
+        seq = self._startup_seq
+        self.query_one("#startup-summary", Static).update(
+            "[yellow]⟳[/yellow] Scanning third-party LaunchAgents & LaunchDaemons..."
+        )
+        self._scan_startup_worker(seq)
+
     @work(thread=True)
-    def _scan_startup_worker(self) -> None:
+    def _scan_startup_worker(self, seq: Optional[int] = None) -> None:
+        active_seq = self._startup_seq if seq is None else seq
         self.call_from_thread(self._set_status, "[yellow]⟳[/yellow] Scanning LaunchAgents & LaunchDaemons...")
         items = scan_startup_items(home=self._home, system_root=self._system_root)
-        self.call_from_thread(self._on_startup_loaded, items)
+        self.call_from_thread(self._on_startup_loaded, items, active_seq)
 
-    def _on_startup_loaded(self, items: List[StartupItem]) -> None:
+    def _on_startup_loaded(self, items: List[StartupItem], seq: int) -> None:
+        if seq != self._startup_seq:
+            return
+        self._startup_scanning = False
+        self._startup_loaded_once = True
         self._startup_items = items
         running_count = sum(1 for i in items if i.is_running)
         self.query_one("#startup-summary", Static).update(
@@ -973,7 +993,7 @@ class PurgeKitApp(App[None]):
             self._set_status(f"[yellow]Unloaded {ok_count}/{len(paths)}:[/yellow] {fail_msgs[0]}")
         else:
             self._set_status(f"[green]✓ Unloaded {ok_count} service(s) via launchctl.[/green]")
-        self._scan_startup_worker()
+        self._start_startup_scan()
 
     def _resolve_lens_input(self, raw_path: str) -> Path:
         text = raw_path.strip() or "~"
@@ -984,29 +1004,9 @@ class PurgeKitApp(App[None]):
             return (base_home / text[2:]).resolve()
         return Path(text).expanduser().resolve()
 
-    def _start_lens_scan(self, raw_path: Optional[str] = None) -> None:
-        if raw_path is not None:
-            self._lens_dir = self._resolve_lens_input(raw_path)
-        self.query_one("#lens-path-input", Input).value = _short_path(self._lens_dir, home=self._home)
-        self._scan_lens_worker(self._lens_dir)
-
-    @work(thread=True)
-    def _scan_lens_worker(self, target_dir: Path) -> None:
-        self.call_from_thread(self._set_status, f"[yellow]⟳[/yellow] Measuring disk footprint under {target_dir}...")
-        root, total, entries = scan_space_lens(target_dir=target_dir, home=self._home)
-        self.call_from_thread(self._on_lens_loaded, root, total, entries)
-
-    def _on_lens_loaded(self, root: Path, total: int, entries: List[SpaceLensEntry]) -> None:
-        self._lens_dir = root
-        self._lens_entries = entries
-        self.query_one("#lens-summary", Static).update(
-            f"Directory: [bold cyan]{_short_path(root, home=self._home)}[/bold cyan]  •  "
-            f"Entries: [bold]{len(entries)}[/bold]  •  "
-            f"Total Measured: [bold green]{format_bytes(total)}[/bold green]"
-        )
+    def _render_lens_options(self, entries: List[SpaceLensEntry]) -> None:
         sel_list = self.query_one("#lens-list", SelectionList)
         sel_list.clear_options()
-        sel_list.border_title = f"Disk Lens — {_short_path(root, home=self._home)}"
         options: List[Selection[str]] = []
         for entry in entries:
             blocks = max(1, int(round((entry.share_pct / 100.0) * 14))) if entry.size_bytes > 0 else 0
@@ -1019,7 +1019,96 @@ class PurgeKitApp(App[None]):
             )
             options.append(Selection(label, str(entry.path), initial_state=False))
         sel_list.add_options(options)
-        self._set_status(f"[green]●[/green] Disk Lens measured {format_bytes(total)} in {_short_path(root, home=self._home)}.")
+
+    def _start_lens_scan(self, raw_path: Optional[str] = None) -> None:
+        if raw_path is not None:
+            self._lens_dir = self._resolve_lens_input(raw_path)
+        self._lens_seq += 1
+        self._lens_scanning = True
+        seq = self._lens_seq
+        short_dir = _short_path(self._lens_dir, home=self._home)
+        self.query_one("#lens-path-input", Input).value = short_dir
+        self.query_one("#lens-list", SelectionList).border_title = f"Disk Lens — {short_dir}"
+        self.query_one("#lens-summary", Static).update(
+            f"[yellow]⟳[/yellow] Scanning physical SSD footprint under [bold cyan]{short_dir}[/bold cyan]... "
+            f"[dim](excluding cloud-only placeholders)[/dim]"
+        )
+        self._scan_lens_worker(self._lens_dir, seq)
+
+    @work(thread=True)
+    def _scan_lens_worker(self, target_dir: Path, seq: int) -> None:
+        short_dir = _short_path(target_dir, home=self._home)
+        self.call_from_thread(self._set_status, f"[yellow]⟳[/yellow] Measuring physical SSD footprint under {short_dir}...")
+
+        def on_progress(
+            done_count: int,
+            total_count: int,
+            current_name: str,
+            total_bytes: int,
+            partial_entries: List[SpaceLensEntry],
+        ) -> None:
+            self.call_from_thread(
+                self._on_lens_progress,
+                target_dir,
+                done_count,
+                total_count,
+                current_name,
+                total_bytes,
+                partial_entries,
+                seq,
+            )
+
+        root, total, entries = scan_space_lens(
+            target_dir=target_dir,
+            home=self._home,
+            progress_cb=on_progress,
+            should_cancel=lambda: seq != self._lens_seq,
+        )
+        self.call_from_thread(self._on_lens_loaded, root, total, entries, seq)
+
+    def _on_lens_progress(
+        self,
+        root: Path,
+        done_count: int,
+        total_count: int,
+        current_name: str,
+        total_bytes: int,
+        partial_entries: List[SpaceLensEntry],
+        seq: int,
+    ) -> None:
+        if seq != self._lens_seq:
+            return
+        short_dir = _short_path(root, home=self._home)
+        scanning_part = f" • measuring [bold]{current_name}[/bold]" if current_name else ""
+        self.query_one("#lens-summary", Static).update(
+            f"[yellow]⟳[/yellow] Directory: [bold cyan]{short_dir}[/bold cyan]  •  "
+            f"Scanned: [bold]{done_count}/{total_count}[/bold]{scanning_part}  •  "
+            f"Measured so far: [bold green]{format_bytes(total_bytes)}[/bold green]"
+        )
+        self._set_status(
+            f"[yellow]⟳[/yellow] Disk Lens ({done_count}/{total_count}): measuring {current_name or short_dir}..."
+        )
+        if partial_entries:
+            self._lens_entries = partial_entries
+            self._render_lens_options(partial_entries)
+
+    def _on_lens_loaded(self, root: Path, total: int, entries: List[SpaceLensEntry], seq: int) -> None:
+        if seq != self._lens_seq:
+            return
+        self._lens_scanning = False
+        self._lens_loaded_once = True
+        self._lens_dir = root
+        self._lens_entries = entries
+        short_dir = _short_path(root, home=self._home)
+        self.query_one("#lens-summary", Static).update(
+            f"Directory: [bold cyan]{short_dir}[/bold cyan]  •  "
+            f"Top Entries: [bold]{len(entries)}[/bold]  •  "
+            f"Physical SSD Used: [bold green]{format_bytes(total)}[/bold green]  "
+            f"[dim](cloud-only placeholders excluded • 'Drill Selected' opens subfolder)[/dim]"
+        )
+        self.query_one("#lens-list", SelectionList).border_title = f"Disk Lens — {short_dir}"
+        self._render_lens_options(entries)
+        self._set_status(f"[green]●[/green] Disk Lens measured {format_bytes(total)} in {short_dir}.")
 
     def _lens_drill_selected(self) -> None:
         target = self._highlighted_path_for("#lens-list")
@@ -1027,6 +1116,15 @@ class PurgeKitApp(App[None]):
             self._start_lens_scan(str(target))
         else:
             self._set_status("Highlight a folder in Disk Lens to drill into it.")
+
+    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        pane_id = event.pane.id if event.pane else ""
+        if pane_id == "tab-startup":
+            if not self._startup_scanning:
+                self._start_startup_scan()
+        elif pane_id == "tab-lens":
+            if not self._lens_loaded_once and not self._lens_scanning:
+                self._start_lens_scan()
 
     def _lens_go_up(self) -> None:
         parent = self._lens_dir.parent
@@ -1075,7 +1173,7 @@ class PurgeKitApp(App[None]):
         elif active == "tab-sweep":
             self._scan_sweep_worker()
         elif active == "tab-startup":
-            self._scan_startup_worker()
+            self._start_startup_scan()
         elif active == "tab-lens":
             self._start_lens_scan(self.query_one("#lens-path-input", Input).value)
         else:
@@ -1187,7 +1285,7 @@ class PurgeKitApp(App[None]):
                 "tab-orphans": self._scan_orphans_worker,
                 "tab-files": lambda: self._start_file_search(self.query_one("#file-search-input", Input).value),
                 "tab-sweep": self._scan_sweep_worker,
-                "tab-startup": self._scan_startup_worker,
+                "tab-startup": self._start_startup_scan,
                 "tab-lens": lambda: self._start_lens_scan(self.query_one("#lens-path-input", Input).value),
             }
             self._confirm_and_remove_paths(
@@ -1294,7 +1392,7 @@ class PurgeKitApp(App[None]):
         elif btn_id == "btn-sweep-min":
             self._cycle_sweep_min()
         elif btn_id == "btn-scan-startup":
-            self._scan_startup_worker()
+            self._start_startup_scan()
         elif btn_id == "btn-startup-unload":
             self._unload_selected_startup()
         elif btn_id == "btn-run-lens":

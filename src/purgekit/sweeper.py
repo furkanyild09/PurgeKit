@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+import time
 from collections import deque
 from pathlib import Path
-from typing import Deque, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Deque, List, Optional, Sequence, Set, Tuple
 
 from purgekit.models import RiskLevel, SpaceLensEntry, SweepItem
 from purgekit.safety import is_sip_protected_path, requires_admin_privileges
@@ -201,35 +202,14 @@ def scan_sweep_targets(
     return items[:limit]
 
 
-def scan_space_lens(
-    target_dir: Optional[Path] = None,
-    home: Optional[Path] = None,
-    limit: int = 30,
-) -> Tuple[Path, int, List[SpaceLensEntry]]:
-    """Measure immediate child footprints under `target_dir` (default: home) for Space Lens."""
-    user_home = (home or Path.home()).resolve()
-    root = (target_dir or user_home).resolve()
-    if not root.is_dir():
-        return root, 0, []
-
-    raw: List[Tuple[Path, str, int, bool, bool]] = []
-    total_bytes = 0
-    try:
-        with os.scandir(root) as entries:
-            for entry in entries:
-                if entry.name == ".Trash":
-                    continue
-                ep = Path(entry.path)
-                is_dir = entry.is_dir(follow_symlinks=False)
-                size = get_path_size(ep)
-                total_bytes += size
-                raw.append((ep, entry.name, size, is_dir, is_sip_protected_path(ep, home=user_home)))
-    except OSError:
-        return root, 0, []
-
-    raw.sort(key=lambda row: (-row[2], row[1].lower()))
+def _build_space_lens_entries(
+    raw: List[Tuple[Path, str, int, bool, bool]],
+    total_bytes: int,
+    limit: int,
+) -> List[SpaceLensEntry]:
+    ordered = sorted(raw, key=lambda row: (-row[2], row[1].lower()))
     denom = max(total_bytes, 1)
-    entries_out = [
+    return [
         SpaceLensEntry(
             path=p,
             name=name,
@@ -238,6 +218,54 @@ def scan_space_lens(
             is_dir=is_dir,
             is_protected=protected,
         )
-        for p, name, size, is_dir, protected in raw[:limit]
+        for p, name, size, is_dir, protected in ordered[:limit]
     ]
+
+
+def scan_space_lens(
+    target_dir: Optional[Path] = None,
+    home: Optional[Path] = None,
+    limit: int = 30,
+    progress_cb: Optional[Callable[[int, int, str, int, List[SpaceLensEntry]], None]] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
+) -> Tuple[Path, int, List[SpaceLensEntry]]:
+    """Measure immediate child physical SSD footprints under `target_dir` for Disk Lens."""
+    user_home = (home or Path.home()).resolve()
+    root = (target_dir or user_home).resolve()
+    if not root.is_dir():
+        return root, 0, []
+
+    try:
+        with os.scandir(root) as it:
+            immediate = [entry for entry in it if entry.name != ".Trash"]
+    except OSError:
+        return root, 0, []
+
+    total_items = len(immediate)
+    raw: List[Tuple[Path, str, int, bool, bool]] = []
+    total_bytes = 0
+    last_emit = time.monotonic()
+
+    for idx, entry in enumerate(immediate):
+        if should_cancel and should_cancel():
+            break
+        ep = Path(entry.path)
+        is_dir = entry.is_dir(follow_symlinks=False)
+        if progress_cb and (idx == 0 or (time.monotonic() - last_emit) >= 0.35):
+            progress_cb(
+                idx,
+                total_items,
+                entry.name,
+                total_bytes,
+                _build_space_lens_entries(raw, total_bytes, limit),
+            )
+            last_emit = time.monotonic()
+
+        size = get_path_size(ep)
+        total_bytes += size
+        raw.append((ep, entry.name, size, is_dir, is_sip_protected_path(ep, home=user_home)))
+
+    entries_out = _build_space_lens_entries(raw, total_bytes, limit)
+    if progress_cb and not (should_cancel and should_cancel()):
+        progress_cb(total_items, total_items, "", total_bytes, entries_out)
     return root, total_bytes, entries_out

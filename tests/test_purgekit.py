@@ -873,14 +873,18 @@ def test_tui_new_tabs_and_reveal_in_finder(tmp_path: Path, monkeypatch) -> None:
                     break
             assert app.query_one("#sweep-list", SelectionList).option_count >= 1
 
-            # Test Startup Services tab & Reveal in Finder ('o')
+            # Startup Services tab auto-scans immediately when opened, and supports 'o' Reveal in Finder
             await switch_tab("tab-startup", "#btn-scan-startup")
-            await pilot.click("#btn-scan-startup")
             for _ in range(25):
                 await pilot.pause(0.05)
                 if app.query_one("#startup-list", SelectionList).option_count > 0:
                     break
             startup_list = app.query_one("#startup-list", SelectionList)
+            assert startup_list.option_count == 1
+
+            # Clicking Refresh Services (#btn-scan-startup) also rescans cleanly without duplicates
+            await pilot.click("#btn-scan-startup")
+            await pilot.pause(0.15)
             assert startup_list.option_count == 1
             startup_list.focus()
             await pilot.pause(0.05)
@@ -888,13 +892,39 @@ def test_tui_new_tabs_and_reveal_in_finder(tmp_path: Path, monkeypatch) -> None:
             await pilot.pause(0.05)
             assert any(p.name == "com.demo.agent.plist" for p in revealed_paths)
 
-            # Test Disk Lens tab
+            # Disk Lens tab auto-scans on open and also supports manual Inspect
             await switch_tab("tab-lens", "#btn-run-lens")
-            await pilot.click("#btn-run-lens")
             for _ in range(25):
                 await pilot.pause(0.05)
-                if app.query_one("#lens-list", SelectionList).option_count > 0:
+                if app.query_one("#lens-list", SelectionList).option_count >= 2:
                     break
+            assert app.query_one("#lens-list", SelectionList).option_count >= 2
+            await pilot.click("#btn-run-lens")
+            await pilot.pause(0.15)
             assert app.query_one("#lens-list", SelectionList).option_count >= 2
 
     asyncio.run(scenario())
+
+
+def test_get_path_size_handles_sparse_and_dataless_files(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+    from purgekit.utils import _effective_file_bytes, get_path_size
+
+    real_file = tmp_path / "real.bin"
+    payload = b"x" * 16384
+    real_file.write_bytes(payload)
+    assert get_path_size(real_file) == len(payload)
+
+    sparse_file = tmp_path / "sparse.bin"
+    with open(sparse_file, "wb") as fh:
+        fh.truncate(10 * 1024 * 1024)
+    # Sparse/evicted APFS file uses 0 physical blocks on disk
+    assert get_path_size(sparse_file) == 0
+
+    # Cloud dataless flag (SF_DATALESS = 0x40000000) reports 0 even if st_blocks is non-zero
+    dataless_stat = SimpleNamespace(st_flags=0x40000000, st_blocks=16, st_size=500_000_000)
+    assert _effective_file_bytes(dataless_stat) == 0  # type: ignore[arg-type]
+
+    # Partially compressed/allocated file takes min(logical, allocated blocks)
+    allocated_stat = SimpleNamespace(st_flags=0, st_blocks=8, st_size=4096)
+    assert _effective_file_bytes(allocated_stat) == 4096  # type: ignore[arg-type]
