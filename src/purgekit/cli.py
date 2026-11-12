@@ -24,10 +24,22 @@ from purgekit.utils import format_bytes
 
 app = typer.Typer(
     name="purgekit",
-    help="Revo Uninstaller yaklaşımından esinlenen macOS akıllı uygulama kaldırıcı ve artık tarayıcı.",
-    no_args_is_help=True,
+    help="Smart macOS application uninstaller and leftover scanner (CLI & TUI).",
 )
 console = Console()
+
+
+@app.callback(invoke_without_command=True)
+def main(
+    ctx: typer.Context,
+    include_system: bool = typer.Option(False, "--system", help="Sistem uygulamalarını da salt-okunur olarak listele."),
+    resize: bool = typer.Option(True, "--resize/--no-resize", help="Başlangıçta terminal penceresini otomatik olarak TUI'a göre genişlet."),
+) -> None:
+    """Launch the interactive TUI directly when invoked without a subcommand."""
+    if ctx.invoked_subcommand is None:
+        from purgekit.ui.tui import run_tui
+
+        run_tui(include_system=include_system, resize=resize)
 
 RISK_STYLE = {
     RiskLevel.LOW: "green",

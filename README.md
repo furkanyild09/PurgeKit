@@ -22,7 +22,35 @@ A smart application uninstaller and deep leftover scanner for **macOS** (CLI & i
 - macOS
 - Python 3.9+
 
-## Installation
+## Quick Start (One-Command Install)
+
+Install directly from GitHub on macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/furkanyild09/PurgeKit/main/install.sh | bash
+```
+
+Then just run:
+
+```bash
+purgekit
+```
+
+### Alternatives (`uvx` / `pipx` / Source)
+
+Run instantly without installing (requires `uv`):
+```bash
+uvx --from git+https://github.com/furkanyild09/PurgeKit purgekit
+```
+
+Or install globally with `pipx`:
+```bash
+pipx install git+https://github.com/furkanyild09/PurgeKit
+purgekit
+```
+
+<details>
+<summary>Manual install from source</summary>
 
 ```bash
 git clone https://github.com/furkanyild09/PurgeKit.git
@@ -30,14 +58,19 @@ cd PurgeKit
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
+purgekit
 ```
+
+</details>
 
 ## Usage
 
 ### Interactive TUI
 
+Running `purgekit` (or `PurgeKit` / `purgekit ui`) launches the interactive TUI directly:
+
 ```bash
-purgekit ui
+purgekit
 ```
 
 **Keyboard Shortcuts:**

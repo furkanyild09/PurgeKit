@@ -250,6 +250,22 @@ def test_cli_version_and_doctor() -> None:
     assert "Full Disk Access" in res_doc.stdout
 
 
+def test_cli_bare_command_launches_tui(monkeypatch) -> None:
+    import purgekit.ui.tui as tui_mod
+
+    called = {}
+
+    def fake_run_tui(include_system: bool = False, resize: bool = True) -> None:
+        called["include_system"] = include_system
+        called["resize"] = resize
+
+    monkeypatch.setattr(tui_mod, "run_tui", fake_run_tui)
+    runner = CliRunner()
+    res = runner.invoke(cli_app, [])
+    assert res.exit_code == 0
+    assert called == {"include_system": False, "resize": True}
+
+
 def test_tui_smoke_flow(tmp_path: Path) -> None:
     import asyncio
     from textual.widgets import DataTable, SelectionList, Static
