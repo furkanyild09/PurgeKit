@@ -100,25 +100,25 @@ def _match_entry(
     if rule.category == "Group Containers":
         for grp in app_groups:
             if lower == grp.lower():
-                return MatchConfidence.EXACT, f"Entitlements App Group eşleşmesi ({grp})"
+                return MatchConfidence.EXACT, f"Entitlements App Group match ({grp})"
         if bundle_lower and (lower == bundle_lower or lower.endswith("." + bundle_lower)):
-            return MatchConfidence.HIGH, "Group Container bundle ID eşleşmesi"
+            return MatchConfidence.HIGH, "Group Container bundle ID match"
         if _mode_enabled(mode, ScanMode.MODERATE) and bundle_lower:
             # e.g. TEAMID.com.vendor.app*
             if f".{bundle_lower}" in lower:
-                return MatchConfidence.HEURISTIC, "Group Container önek eşleşmesi"
+                return MatchConfidence.HEURISTIC, "Group Container prefix match"
         return None
 
     # 2. Exact Bundle ID match
     if bundle_lower:
         if lower == bundle_lower:
-            return MatchConfidence.EXACT, f"Tam Bundle ID eşleşmesi ({app.bundle_id})"
+            return MatchConfidence.EXACT, f"Exact Bundle ID match ({app.bundle_id})"
         if lower.startswith(bundle_lower + "."):
             # e.g. com.foo.bar.plist, com.foo.bar.savedState, com.foo.bar.helper.plist
             if rule.is_plist_dir or lower.endswith((".savedstate", ".binarycookies")):
-                return MatchConfidence.EXACT, f"Bundle ID dosya eşleşmesi ({app.bundle_id})"
+                return MatchConfidence.EXACT, f"Bundle ID file match ({app.bundle_id})"
             if _mode_enabled(mode, ScanMode.MODERATE) and rule.allow_prefix_match:
-                return MatchConfidence.HIGH, f"Bundle ID alt bileşen öneki ({app.bundle_id}.*)"
+                return MatchConfidence.HIGH, f"Bundle ID subcomponent prefix ({app.bundle_id}.*)"
 
     # 3. Safe / Moderate Name Match (guarding against shared vendor folders)
     if rule.allow_name_match and _mode_enabled(mode, ScanMode.MODERATE):
@@ -128,10 +128,10 @@ def _match_entry(
                 # If entry name is also a shared vendor name (rare, e.g. "Adobe"), guard it
                 if cand_lower in shared_vendors:
                     return None
-                return MatchConfidence.HIGH, f"Uygulama adı eşleşmesi ({candidate})"
+                return MatchConfidence.HIGH, f"App name match ({candidate})"
             if _mode_enabled(mode, ScanMode.ADVANCED) and len(candidate) >= 5:
                 if normalize_token(entry_name) == normalize_token(candidate):
-                    return MatchConfidence.HEURISTIC, f"Normalize ad eşleşmesi ({candidate})"
+                    return MatchConfidence.HEURISTIC, f"Normalized name match ({candidate})"
 
     return None
 
@@ -154,7 +154,7 @@ def scan_app_leftovers(
 
     if app.is_protected:
         result.warnings.append(
-            f"{app.name} sistem korumalı (SIP/Apple) bir uygulamadır; kaldırılması engellenmiştir."
+            f"{app.name} is a SIP/Apple system-protected app; removal is blocked."
         )
 
     if check_fda:
@@ -162,7 +162,7 @@ def scan_app_leftovers(
         if not has_fda:
             result.blocked_paths.extend(blocked)
             result.warnings.append(
-                "Full Disk Access (Tam Disk Erişimi) eksik: Bazı korumalı Library dizinleri taranamadı."
+                "Full Disk Access missing: some protected Library folders could not be scanned."
             )
 
     app_groups = app.app_groups or read_app_groups(app.path)
@@ -226,7 +226,7 @@ def scan_app_leftovers(
                                     rule.category,
                                     rule.risk,
                                     MatchConfidence.HIGH,
-                                    f"Paylaşılan geliştirici klasörü içinde uygulama alt dizini ({entry_name}/{candidate})",
+                                    f"App subdirectory inside shared vendor folder ({entry_name}/{candidate})",
                                 )
                         continue
 
@@ -255,7 +255,7 @@ def scan_app_leftovers(
                 "HomebrewZap",
                 RiskLevel.MEDIUM,
                 MatchConfidence.EXACT,
-                f"Homebrew Cask zap tanımı ({app.cask_name})",
+                f"Homebrew Cask zap definition ({app.cask_name})",
             )
 
     # Advanced mode: .pkg receipt analysis & external files
@@ -271,14 +271,14 @@ def scan_app_leftovers(
                     "PkgReceipt",
                     RiskLevel.HIGH,
                     MatchConfidence.HIGH,
-                    f".pkg kurulum kaydı ({pkg_id})",
+                    f".pkg installer receipt ({pkg_id})",
                 )
 
     if check_processes:
         result.running_processes = find_running_processes(app)
         if result.running_processes:
             result.warnings.append(
-                f"Uygulamaya ait {len(result.running_processes)} çalışan süreç tespit edildi."
+                f"Detected {len(result.running_processes)} running process(es) for {app.name}."
             )
 
     risk_rank = {RiskLevel.LOW: 0, RiskLevel.MEDIUM: 1, RiskLevel.HIGH: 2}

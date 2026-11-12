@@ -35,6 +35,7 @@ dev = [
 
 [project.scripts]
 purgekit = "purgekit.cli:app"
+PurgeKit = "purgekit.cli:app"
 
 [project.urls]
 Homepage = "https://github.com/furkanyild09/PurgeKit"

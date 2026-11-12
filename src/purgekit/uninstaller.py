@@ -109,7 +109,7 @@ def _validate_targets(
             continue
         seen.add(abs_p)
         if is_sip_protected_path(p, home=home):
-            outcome.failed.append((p, "SIP/kritik sistem yolu koruması nedeniyle atlandı."))
+            outcome.failed.append((p, "Skipped due to SIP/critical system path protection."))
             continue
         if not p.exists() and not p.is_symlink():
             continue
@@ -171,7 +171,7 @@ def execute_removal(
     )
 
     if app.is_protected and include_app:
-        outcome.failed.append((app.path, "SIP/Apple korumalı sistem uygulaması kaldırılamaz."))
+        outcome.failed.append((app.path, "SIP/Apple protected system application cannot be removed."))
         return outcome
 
     if selected_paths is None:
@@ -213,9 +213,9 @@ def execute_removal(
     if admin_targets or pkg_ids_to_forget:
         if not allow_admin:
             for p in admin_targets:
-                outcome.failed.append((p, "Yönetici izni gerektirir (--admin ile çalıştırın)."))
+                outcome.failed.append((p, "Requires administrator privileges (run with --admin)."))
             for pkg_id in pkg_ids_to_forget:
-                outcome.failed.append((Path(pkg_id), "pkgutil --forget için --admin izni gerekir."))
+                outcome.failed.append((Path(pkg_id), "pkgutil --forget requires --admin privileges."))
         else:
             sizes = {p: get_path_size(p) for p in admin_targets}
             ok, err_msg = _run_privileged_removal(
@@ -275,7 +275,7 @@ def execute_path_removal(
     if admin_targets:
         if not allow_admin:
             for p in admin_targets:
-                outcome.failed.append((p, "Yönetici izni gerektirir (--admin ile çalıştırın)."))
+                outcome.failed.append((p, "Requires administrator privileges (run with --admin)."))
         else:
             sizes = {p: get_path_size(p) for p in admin_targets}
             ok, err_msg = _run_privileged_removal(admin_targets, permanent=permanent, home=home)

@@ -135,7 +135,7 @@ def run_brew_uninstall_cask(
     """Invoke `brew uninstall --cask` when Homebrew is installed."""
     brew_bin = find_brew_binary()
     if not brew_bin:
-        return False, "Homebrew (`brew`) sistemde bulunamadı."
+        return False, "Homebrew (`brew`) was not found on this system."
 
     cmd = [brew_bin, "uninstall", "--cask"]
     if zap:
@@ -154,7 +154,7 @@ def run_brew_uninstall_cask(
             check=False,
         )
         if proc.returncode == 0:
-            return True, (proc.stdout or "brew uninstall tamamlandı").strip()
+            return True, (proc.stdout or "brew uninstall completed").strip()
         return False, (proc.stderr or proc.stdout or f"brew exit {proc.returncode}").strip()
     except (OSError, subprocess.SubprocessError) as exc:
         return False, str(exc)

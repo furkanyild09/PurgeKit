@@ -99,6 +99,7 @@ purgekit uninstall "Spotify" --dry-run     # Preview an uninstall safely
 purgekit uninstall "App" --mode advanced --admin --forget-pkgs
 purgekit orphans --min-kb 100              # Find orphaned leftovers from removed apps
 purgekit history --detail 1                # Inspect the latest removal manifest
+purgekit update                            # Upgrade PurgeKit to the latest GitHub release
 ```
 
 ## Full Disk Access (Recommended)

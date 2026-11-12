@@ -40,13 +40,13 @@ from purgekit.models import (
     ScanResult,
 )
 from purgekit.scanner import scan_app_leftovers, scan_orphans
-from purgekit.uninstaller import execute_orphan_removal, execute_path_removal, execute_removal
+from purgekit.uninstaller import execute_path_removal, execute_removal
 from purgekit.utils import format_bytes
 
 RISK_BADGE = {
-    RiskLevel.LOW: "[green]● DÜŞÜK[/green]",
-    RiskLevel.MEDIUM: "[yellow]● ORTA[/yellow]",
-    RiskLevel.HIGH: "[red]● YÜKSEK[/red]",
+    RiskLevel.LOW: "[green]● LOW[/green]",
+    RiskLevel.MEDIUM: "[yellow]● MED[/yellow]",
+    RiskLevel.HIGH: "[red]● HIGH[/red]",
 }
 
 THEME_CHOICES: Tuple[Tuple[str, str], ...] = (
@@ -77,8 +77,8 @@ def _source_label(app_info: AppInfo) -> str:
     if app_info.source == InstallSource.APP_STORE:
         return "App Store"
     if app_info.source == InstallSource.SYSTEM:
-        return "Sistem"
-    return "Standart"
+        return "System"
+    return "Standard"
 
 
 def prepare_terminal_window(min_cols: int = 148, min_rows: int = 42) -> bool:
@@ -167,8 +167,8 @@ class ConfirmRemovalModal(ModalScreen[bool]):
             yield Label(self._title, id="confirm-title")
             yield Static(self._body, id="confirm-body")
             with Horizontal(id="confirm-actions"):
-                yield Button("İptal", id="modal-cancel")
-                yield Button("Çöp Kutusu'na Taşı", variant="error", id="modal-confirm")
+                yield Button("Cancel", id="modal-cancel")
+                yield Button("Move to Trash", variant="error", id="modal-confirm")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "modal-confirm")
@@ -178,7 +178,7 @@ class PurgeKitApp(App[None]):
     """Dual-pane Revo Uninstaller inspired Textual TUI for macOS."""
 
     TITLE = "PurgeKit"
-    SUB_TITLE = "Akıllı macOS Uygulama Kaldırıcı & Artık Tarayıcı"
+    SUB_TITLE = "Smart macOS Application Uninstaller & File Cleaner"
     CSS = """
     Screen {
         background: $background;
@@ -199,7 +199,7 @@ class PurgeKitApp(App[None]):
         min-width: 14;
     }
     #btn-theme {
-        min-width: 21;
+        min-width: 22;
         text-style: bold;
     }
     #main-tabs {
@@ -295,17 +295,17 @@ class PurgeKitApp(App[None]):
     """
 
     BINDINGS = [
-        Binding("q", "quit", "Çıkış"),
-        Binding("t", "cycle_theme", "Tema"),
-        Binding("f", "open_file_search", "Dosya Ara"),
-        Binding("m", "cycle_mode", "Mod"),
-        Binding("s", "toggle_sort", "Sırala"),
-        Binding("r", "refresh_all", "Yenile"),
-        Binding("a", "toggle_select_all", "Tümü"),
+        Binding("q", "quit", "Quit"),
+        Binding("t", "cycle_theme", "Theme"),
+        Binding("f", "open_file_search", "Find Files"),
+        Binding("m", "cycle_mode", "Mode"),
+        Binding("s", "toggle_sort", "Sort"),
+        Binding("r", "refresh_all", "Refresh"),
+        Binding("a", "toggle_select_all", "All"),
         Binding("d", "dry_run_preview", "Dry-Run"),
-        Binding("u", "request_uninstall", "Kaldır"),
-        Binding("/", "focus_search", "Ara"),
-        Binding("escape", "focus_table", "Listeye Dön", show=False),
+        Binding("u", "request_uninstall", "Uninstall"),
+        Binding("/", "focus_search", "Search"),
+        Binding("escape", "focus_table", "Back to List", show=False),
     ]
 
     def __init__(
@@ -367,88 +367,88 @@ class PurgeKitApp(App[None]):
 
     def _theme_button_label(self) -> str:
         display = THEME_LABELS.get(self._theme_name, self._theme_name)
-        return f"🎨 Tema: {display}"
+        return f"🎨 Theme: {display}"
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal(id="toolbar"):
-            yield Input(placeholder="Uygulama ara (veya dosya aramak için Enter)...", id="search-input")
-            yield Button("🔍 Dosya Ara", id="btn-search-files")
+            yield Input(placeholder="Search apps (or press Enter to search Mac files)...", id="search-input")
+            yield Button("🔍 Find Files", id="btn-search-files")
             yield Button(self._theme_button_label(), id="btn-theme", variant="warning")
-            yield Button("Sırala: Ad ↑", id="btn-sort")
-            yield Button(f"Mod: {self._mode.value.upper()}", id="btn-mode", variant="primary")
-            yield Button("Yenile", id="btn-refresh")
+            yield Button("Sort: Name ↑", id="btn-sort")
+            yield Button(f"Mode: {self._mode.value.upper()}", id="btn-mode", variant="primary")
+            yield Button("Refresh", id="btn-refresh")
 
         with TabbedContent(id="main-tabs"):
-            with TabPane("Uygulamalar", id="tab-apps"):
+            with TabPane("Applications", id="tab-apps"):
                 with Horizontal(id="apps-split"):
                     with Vertical(id="left-pane"):
                         yield DataTable(id="apps-table", cursor_type="row", zebra_stripes=True)
                     with Vertical(id="right-pane"):
                         with Horizontal(id="metrics-row"):
-                            yield Static("Uygulama\n[bold cyan]-[/bold cyan]", id="metric-app", classes="metric-card")
-                            yield Static("Artıklar\n[bold yellow]-[/bold yellow]", id="metric-leftovers", classes="metric-card")
-                            yield Static("Toplam Alan\n[bold green]-[/bold green]", id="metric-total", classes="metric-card")
-                        yield Static("Bir uygulama seçin...", id="app-summary")
+                            yield Static("App Size\n[bold cyan]-[/bold cyan]", id="metric-app", classes="metric-card")
+                            yield Static("Leftovers\n[bold yellow]-[/bold yellow]", id="metric-leftovers", classes="metric-card")
+                            yield Static("Total Freed\n[bold green]-[/bold green]", id="metric-total", classes="metric-card")
+                        yield Static("Select an application...", id="app-summary")
                         yield SelectionList(id="leftovers-list")
                         with Horizontal(id="action-bar"):
-                            yield Button("Tümünü Seç/Temizle", id="btn-toggle-all")
+                            yield Button("Select All / None", id="btn-toggle-all")
                             yield Button("Dry-Run", id="btn-dry-run")
-                            yield Button("Çöp Kutusu'na Kaldır", id="btn-uninstall", variant="error")
-            with TabPane("Dosya Arama (Files)", id="tab-files"):
+                            yield Button("Uninstall to Trash", id="btn-uninstall", variant="error")
+            with TabPane("File Search", id="tab-files"):
                 with Vertical(id="files-container"):
                     with Horizontal(id="file-search-bar"):
                         yield Input(
-                            placeholder="Mac'te dosya veya klasör ara (ör. .dmg, rapor, spotify)...",
+                            placeholder="Search files or folders on Mac (e.g. .dmg, invoice, spotify)...",
                             id="file-search-input",
                         )
-                        yield Button("Ara", id="btn-run-file-search", variant="primary")
-                        yield Button("Kapsam: Kullanıcı (~)", id="btn-file-scope")
-                        yield Button("Tür: Tümü", id="btn-file-type")
+                        yield Button("Search", id="btn-run-file-search", variant="primary")
+                        yield Button("Scope: User (~)", id="btn-file-scope")
+                        yield Button("Type: All", id="btn-file-type")
                     yield Static(
-                        "Spotlight + ~/Library + Kullanıcı dizinlerinde aramak için bir kelime yazıp Enter'a basın.",
+                        "Type a filename, extension, or keywords and press Enter to scan Spotlight, ~/Library, and user folders.",
                         id="files-summary",
                     )
                     yield SelectionList(id="files-list")
                     with Horizontal(id="files-action-bar"):
-                        yield Button("Tümünü Seç/Temizle", id="btn-files-toggle-all")
+                        yield Button("Select All / None", id="btn-files-toggle-all")
                         yield Button("Dry-Run", id="btn-files-dry-run")
-                        yield Button("Seçili Dosyaları Taşı", id="btn-files-clean", variant="error")
-            with TabPane("Yetim Artıklar (Orphans)", id="tab-orphans"):
+                        yield Button("Move Selected to Trash", id="btn-files-clean", variant="error")
+            with TabPane("Orphaned Leftovers", id="tab-orphans"):
                 with Vertical(id="orphans-container"):
-                    yield Static("Yetim artıkları taramak için 'Yetimleri Tara' butonuna basın.", id="orphans-summary")
+                    yield Static("Click 'Scan Orphans' to detect orphaned leftovers from removed apps.", id="orphans-summary")
                     yield SelectionList(id="orphans-list")
                     with Horizontal(id="orphans-action-bar"):
-                        yield Button("Yetimleri Tara", id="btn-scan-orphans", variant="primary")
+                        yield Button("Scan Orphans", id="btn-scan-orphans", variant="primary")
                         yield Button("Dry-Run", id="btn-orphans-dry-run")
-                        yield Button("Seçili Yetimleri Taşı", id="btn-orphans-clean", variant="error")
+                        yield Button("Trash Selected Orphans", id="btn-orphans-clean", variant="error")
 
-        yield Static("● Hazır", id="status-line")
+        yield Static("● Ready", id="status-line")
         yield Footer()
 
     def on_mount(self) -> None:
         left_pane = self.query_one("#left-pane", Vertical)
-        left_pane.border_title = "Kurulu Uygulamalar"
-        left_pane.border_subtitle = "↑↓ Seç  •  / Ara"
+        left_pane.border_title = "Installed Applications"
+        left_pane.border_subtitle = "↑↓ Select  •  / Search"
 
         right_pane = self.query_one("#right-pane", Vertical)
-        right_pane.border_title = "Uygulama Analizi"
-        right_pane.border_subtitle = f"Mod: {self._mode.value.upper()}"
+        right_pane.border_title = "Application Analysis"
+        right_pane.border_subtitle = f"Mode: {self._mode.value.upper()}"
 
         leftovers_list = self.query_one("#leftovers-list", SelectionList)
-        leftovers_list.border_title = "Tespit Edilen Artık Dosyalar"
-        leftovers_list.border_subtitle = "Space: İşaretle"
+        leftovers_list.border_title = "Detected Leftovers"
+        leftovers_list.border_subtitle = "Space: Toggle"
 
         files_list = self.query_one("#files-list", SelectionList)
-        files_list.border_title = "Bulunan Dosya ve Klasörler"
-        files_list.border_subtitle = "Space: İşaretle"
+        files_list.border_title = "Matched Files & Folders"
+        files_list.border_subtitle = "Space: Toggle"
 
         orphans_list = self.query_one("#orphans-list", SelectionList)
-        orphans_list.border_title = "Yetim Library Öğeleri"
-        orphans_list.border_subtitle = "Space: İşaretle"
+        orphans_list.border_title = "Orphaned Library Items"
+        orphans_list.border_subtitle = "Space: Toggle"
 
         table = self.query_one("#apps-table", DataTable)
-        table.add_columns("Uygulama", "Sürüm", "Kaynak", "Boyut")
+        table.add_columns("Application", "Version", "Source", "Size")
         table.focus()
         self._load_apps_worker()
 
@@ -457,7 +457,7 @@ class PurgeKitApp(App[None]):
 
     @work(thread=True)
     def _load_apps_worker(self) -> None:
-        self.call_from_thread(self._set_status, "[yellow]⟳[/yellow] Kurulu uygulamalar taranıyor...")
+        self.call_from_thread(self._set_status, "[yellow]⟳[/yellow] Scanning installed applications...")
         apps = find_installed_apps(
             app_dirs=self._app_dirs,
             include_system=self._include_system,
@@ -477,13 +477,13 @@ class PurgeKitApp(App[None]):
         self._all_apps = apps
         self._apps_by_key = {os.path.abspath(str(a.path)): a for a in apps}
         self._populate_apps_table(self.query_one("#search-input", Input).value)
-        self._set_status(f"[yellow]⟳[/yellow] {len(apps)} uygulama bulundu. Boyutlar hesaplanıyor...")
+        self._set_status(f"[yellow]⟳[/yellow] Found {len(apps)} apps. Calculating sizes...")
 
     def _on_apps_sized(self, apps: List[AppInfo]) -> None:
         self._all_apps = apps
         self._apps_by_key = {os.path.abspath(str(a.path)): a for a in apps}
         self._populate_apps_table(self.query_one("#search-input", Input).value, preserve_selection=True)
-        self._set_status(f"[green]●[/green] {len(apps)} uygulama hazır.")
+        self._set_status(f"[green]●[/green] {len(apps)} apps ready.")
 
     def _populate_apps_table(self, search_query: str = "", preserve_selection: bool = False) -> None:
         q = search_query.strip().lower()
@@ -502,7 +502,7 @@ class PurgeKitApp(App[None]):
             filtered.sort(key=lambda a: a.name.lower())
 
         self._filtered_apps = filtered
-        self.query_one("#left-pane", Vertical).border_title = f"Kurulu Uygulamalar ({len(filtered)})"
+        self.query_one("#left-pane", Vertical).border_title = f"Installed Applications ({len(filtered)})"
 
         table = self.query_one("#apps-table", DataTable)
         prev_key = os.path.abspath(str(self._current_app.path)) if (preserve_selection and self._current_app) else None
@@ -523,11 +523,11 @@ class PurgeKitApp(App[None]):
         elif not filtered:
             self._current_app = None
             self._current_scan = None
-            self.query_one("#metric-app", Static).update("Uygulama\n[bold cyan]-[/bold cyan]")
-            self.query_one("#metric-leftovers", Static).update("Artıklar\n[bold yellow]-[/bold yellow]")
-            self.query_one("#metric-total", Static).update("Toplam Alan\n[bold green]-[/bold green]")
+            self.query_one("#metric-app", Static).update("App Size\n[bold cyan]-[/bold cyan]")
+            self.query_one("#metric-leftovers", Static).update("Leftovers\n[bold yellow]-[/bold yellow]")
+            self.query_one("#metric-total", Static).update("Total Freed\n[bold green]-[/bold green]")
             self.query_one("#app-summary", Static).update(
-                "Eşleşen uygulama yok.\n[cyan]İpucu:[/cyan] [bold]Enter[/bold] tuşuna veya [bold]🔍 Dosya Ara[/bold] butonuna basarak Mac'teki dosya ve klasörlerde arayabilirsiniz."
+                "No matching applications.\n[cyan]Tip:[/cyan] Press [bold]Enter[/bold] or click [bold]🔍 Find Files[/bold] to search all files & folders on your Mac."
             )
             self.query_one("#leftovers-list", SelectionList).clear_options()
 
@@ -563,10 +563,10 @@ class PurgeKitApp(App[None]):
         self._scan_seq += 1
         seq = self._scan_seq
         right_pane = self.query_one("#right-pane", Vertical)
-        right_pane.border_title = f"Uygulama Analizi — {app_info.name}"
-        right_pane.border_subtitle = f"Mod: {self._mode.value.upper()}"
+        right_pane.border_title = f"Application Analysis — {app_info.name}"
+        right_pane.border_subtitle = f"Mode: {self._mode.value.upper()}"
         self.query_one("#app-summary", Static).update(
-            f"[bold]{app_info.name}[/bold] taranıyor ({self._mode.value})..."
+            f"Scanning [bold]{app_info.name}[/bold] ({self._mode.value})..."
         )
         self.query_one("#leftovers-list", SelectionList).clear_options()
         self._scan_app_worker(app_info, self._mode, seq)
@@ -597,13 +597,13 @@ class PurgeKitApp(App[None]):
         app_info = result.app
 
         self.query_one("#metric-app", Static).update(
-            f"Uygulama\n[bold cyan]{format_bytes(app_info.size_bytes)}[/bold cyan]"
+            f"App Size\n[bold cyan]{format_bytes(app_info.size_bytes)}[/bold cyan]"
         )
         self.query_one("#metric-leftovers", Static).update(
-            f"Artıklar ({len(result.leftovers)})\n[bold yellow]{format_bytes(result.leftover_size_bytes)}[/bold yellow]"
+            f"Leftovers ({len(result.leftovers)})\n[bold yellow]{format_bytes(result.leftover_size_bytes)}[/bold yellow]"
         )
         self.query_one("#metric-total", Static).update(
-            f"Toplam Alan\n[bold green]{format_bytes(result.total_size_bytes)}[/bold green]"
+            f"Total Freed\n[bold green]{format_bytes(result.total_size_bytes)}[/bold green]"
         )
 
         meta_extra = ""
@@ -619,14 +619,14 @@ class PurgeKitApp(App[None]):
         summary = (
             f"[bold cyan]{app_info.name}[/bold cyan] ({app_info.version or '?'})  "
             f"[dim]{app_info.bundle_id or '-'}[/dim]{meta_extra}\n"
-            f"[dim]Yol:[/dim] {_short_path(app_info.path, home=self._home)}"
+            f"[dim]Path:[/dim] {_short_path(app_info.path, home=self._home)}"
             f"{warnings_text}"
         )
         self.query_one("#app-summary", Static).update(summary)
 
         sel_list = self.query_one("#leftovers-list", SelectionList)
         sel_list.clear_options()
-        sel_list.border_title = f"Tespit Edilen Artık Dosyalar ({len(result.leftovers)})"
+        sel_list.border_title = f"Detected Leftovers ({len(result.leftovers)})"
         options: List[Selection[str]] = []
         for item in result.leftovers:
             badge = RISK_BADGE[item.risk]
@@ -638,11 +638,11 @@ class PurgeKitApp(App[None]):
             )
             options.append(Selection(label, str(item.path), initial_state=item.selected_by_default))
         sel_list.add_options(options)
-        self._set_status(f"[green]●[/green] {app_info.name}: {len(result.leftovers)} artık öğe listelendi.")
+        self._set_status(f"[green]●[/green] {app_info.name}: {len(result.leftovers)} leftover(s) listed.")
 
     @work(thread=True)
     def _scan_orphans_worker(self) -> None:
-        self.call_from_thread(self._set_status, "[yellow]⟳[/yellow] Yetim artıklar taranıyor...")
+        self.call_from_thread(self._set_status, "[yellow]⟳[/yellow] Scanning orphaned leftovers...")
         apps = self._all_apps or find_installed_apps(
             app_dirs=self._app_dirs,
             include_system=self._include_system,
@@ -657,40 +657,40 @@ class PurgeKitApp(App[None]):
         self._orphans = items
         total = sum(i.size_bytes for i in items)
         self.query_one("#orphans-summary", Static).update(
-            f"Tespit edilen yetim artık: [bold]{len(items)}[/bold]  •  "
-            f"Toplam Boyut: [bold yellow]{format_bytes(total)}[/bold yellow]"
+            f"Orphaned leftovers found: [bold]{len(items)}[/bold]  •  "
+            f"Total Size: [bold yellow]{format_bytes(total)}[/bold yellow]"
         )
         sel_list = self.query_one("#orphans-list", SelectionList)
         sel_list.clear_options()
-        sel_list.border_title = f"Yetim Library Öğeleri ({len(items)})"
+        sel_list.border_title = f"Orphaned Library Items ({len(items)})"
         options: List[Selection[str]] = []
         for item in items:
             badge = RISK_BADGE[item.risk]
-            vendor_note = f" [yellow](ortak geliştirici: {item.shared_vendor})[/yellow]" if item.shared_vendor else ""
+            vendor_note = f" [yellow](shared vendor: {item.shared_vendor})[/yellow]" if item.shared_vendor else ""
             label = (
                 f"{badge}  [bold]{format_bytes(item.size_bytes):>8}[/bold]  "
                 f"[cyan]{item.category}[/cyan]  {item.identifier_hint}{vendor_note}"
             )
             options.append(Selection(label, str(item.path), initial_state=False))
         sel_list.add_options(options)
-        self._set_status(f"[green]●[/green] {len(items)} yetim artık bulundu.")
+        self._set_status(f"[green]●[/green] Found {len(items)} orphaned leftover(s).")
 
     def _start_file_search(self, query: str) -> None:
         q = query.strip()
         if not q:
-            self._set_status("Aramak için bir dosya veya klasör adı yazın.")
+            self._set_status("Enter a filename, extension, or folder name to search.")
             return
         self._file_search_seq += 1
         seq = self._file_search_seq
         self.query_one("#files-summary", Static).update(
-            f"[bold]{q}[/bold] için Mac'te arama yapılıyor ({self._file_scope}, {self._file_type})..."
+            f"Searching Mac for [bold]{q}[/bold] (scope={self._file_scope}, type={self._file_type})..."
         )
         self.query_one("#files-list", SelectionList).clear_options()
         self._search_files_worker(q, self._file_scope, self._file_type, seq)
 
     @work(thread=True)
     def _search_files_worker(self, query: str, scope: str, item_type: str, seq: int) -> None:
-        self.call_from_thread(self._set_status, f"[yellow]⟳[/yellow] '{query}' dosyalarda aranıyor...")
+        self.call_from_thread(self._set_status, f"[yellow]⟳[/yellow] Searching Mac files for '{query}'...")
         items = search_files(
             query=query,
             scope=scope,
@@ -706,14 +706,19 @@ class PurgeKitApp(App[None]):
             return
         self._file_results = items
         total = sum(i.size_bytes for i in items)
+        hint = (
+            "  •  Try switching Scope to 'All Mac'"
+            if not items and self._file_scope != "all"
+            else ""
+        )
         self.query_one("#files-summary", Static).update(
-            f"Arama: [bold cyan]{query}[/bold cyan]  •  "
-            f"Bulunan: [bold]{len(items)}[/bold] öğe  •  "
-            f"Toplam Boyut: [bold yellow]{format_bytes(total)}[/bold yellow]"
+            f"Query: [bold cyan]{query}[/bold cyan]  •  "
+            f"Found: [bold]{len(items)}[/bold] item(s)  •  "
+            f"Total Size: [bold yellow]{format_bytes(total)}[/bold yellow]{hint}"
         )
         sel_list = self.query_one("#files-list", SelectionList)
         sel_list.clear_options()
-        sel_list.border_title = f"Bulunan Dosya ve Klasörler ({len(items)})"
+        sel_list.border_title = f"Matched Files & Folders ({len(items)})"
         options: List[Selection[str]] = []
         for item in items:
             badge = RISK_BADGE[item.risk]
@@ -726,22 +731,22 @@ class PurgeKitApp(App[None]):
             )
             options.append(Selection(label, str(item.path), initial_state=False))
         sel_list.add_options(options)
-        self._set_status(f"[green]●[/green] '{query}' için {len(items)} dosya/klasör bulundu.")
+        self._set_status(f"[green]●[/green] Found {len(items)} file/folder match(es) for '{query}'.")
 
     def _cycle_file_scope(self) -> None:
         order = ("user", "library", "all")
-        labels = {"user": "Kullanıcı (~)", "library": "Library", "all": "Tüm Mac"}
+        labels = {"user": "User (~)", "library": "Library", "all": "All Mac"}
         self._file_scope = order[(order.index(self._file_scope) + 1) % len(order)]
-        self.query_one("#btn-file-scope", Button).label = f"Kapsam: {labels[self._file_scope]}"
+        self.query_one("#btn-file-scope", Button).label = f"Scope: {labels[self._file_scope]}"
         current_q = self.query_one("#file-search-input", Input).value
         if current_q.strip():
             self._start_file_search(current_q)
 
     def _cycle_file_type(self) -> None:
         order = ("all", "file", "dir")
-        labels = {"all": "Tümü", "file": "Dosya", "dir": "Klasör"}
+        labels = {"all": "All", "file": "Files", "dir": "Folders"}
         self._file_type = order[(order.index(self._file_type) + 1) % len(order)]
-        self.query_one("#btn-file-type", Button).label = f"Tür: {labels[self._file_type]}"
+        self.query_one("#btn-file-type", Button).label = f"Type: {labels[self._file_type]}"
         current_q = self.query_one("#file-search-input", Input).value
         if current_q.strip():
             self._start_file_search(current_q)
@@ -767,10 +772,10 @@ class PurgeKitApp(App[None]):
 
     def action_toggle_sort(self) -> None:
         self._sort_by = "size" if self._sort_by == "name" else "name"
-        btn_label = "Sırala: Boyut ↓" if self._sort_by == "size" else "Sırala: Ad ↑"
+        btn_label = "Sort: Size ↓" if self._sort_by == "size" else "Sort: Name ↑"
         self.query_one("#btn-sort", Button).label = btn_label
         self._populate_apps_table(self.query_one("#search-input", Input).value, preserve_selection=True)
-        self._set_status(f"[green]●[/green] Sıralama: {btn_label}")
+        self._set_status(f"[green]●[/green] {btn_label}")
 
     def action_cycle_theme(self) -> None:
         theme_ids = [t[0] for t in THEME_CHOICES if t[0] in self.available_themes]
@@ -784,13 +789,13 @@ class PurgeKitApp(App[None]):
         self.theme = self._theme_name
         self._save_theme(self._theme_name)
         self.query_one("#btn-theme", Button).label = self._theme_button_label()
-        self._set_status(f"[green]●[/green] Tema değiştirildi: {THEME_LABELS.get(self._theme_name, self._theme_name)}")
+        self._set_status(f"[green]●[/green] Theme changed to: {THEME_LABELS.get(self._theme_name, self._theme_name)}")
 
     def action_cycle_mode(self) -> None:
         order = (ScanMode.SAFE, ScanMode.MODERATE, ScanMode.ADVANCED)
         next_idx = (order.index(self._mode) + 1) % len(order)
         self._mode = order[next_idx]
-        self.query_one("#btn-mode", Button).label = f"Mod: {self._mode.value.upper()}"
+        self.query_one("#btn-mode", Button).label = f"Mode: {self._mode.value.upper()}"
         if self._current_app:
             self._start_app_scan(self._current_app)
 
@@ -824,16 +829,16 @@ class PurgeKitApp(App[None]):
         if active in ("tab-orphans", "tab-files"):
             list_id = "#orphans-list" if active == "tab-orphans" else "#files-list"
             label = "OrphanCleanup" if active == "tab-orphans" else "FileCleanup"
-            tag = "Yetimler" if active == "tab-orphans" else "Dosyalar"
+            tag = "Orphans" if active == "tab-orphans" else "Files"
             paths = self._selected_paths_for(list_id)
             outcome = execute_path_removal(paths, label=label, dry_run=True, home=self._home)
             self._set_status(
-                f"[cyan]DRY-RUN ({tag}):[/cyan] {len(outcome.trashed)} öğe Çöp Kutusu'na taşınacaktı ({format_bytes(outcome.reclaimed_bytes)})."
+                f"[cyan]DRY-RUN ({tag}):[/cyan] {len(outcome.trashed)} item(s) would be moved to Trash ({format_bytes(outcome.reclaimed_bytes)})."
             )
             return
 
         if not self._current_scan:
-            self._set_status("Önce bir uygulama seçin.")
+            self._set_status("Select an application first.")
             return
         selected = self._selected_paths_for("#leftovers-list")
         outcome = execute_removal(
@@ -844,7 +849,7 @@ class PurgeKitApp(App[None]):
             home=self._home,
         )
         self._set_status(
-            f"[cyan]DRY-RUN ({self._current_scan.app.name}):[/cyan] {len(outcome.trashed)} öğe kaldırılacaktı ({format_bytes(outcome.reclaimed_bytes)})."
+            f"[cyan]DRY-RUN ({self._current_scan.app.name}):[/cyan] {len(outcome.trashed)} item(s) would be removed ({format_bytes(outcome.reclaimed_bytes)})."
         )
 
     def _confirm_and_remove_paths(
@@ -855,7 +860,7 @@ class PurgeKitApp(App[None]):
         on_done,
     ) -> None:
         if not paths:
-            self._set_status("Önce en az bir öğe seçin.")
+            self._set_status("Select at least one item first.")
             return
         dry = execute_path_removal(paths, label=label, dry_run=True, home=self._home)
         admin_items = [
@@ -864,18 +869,18 @@ class PurgeKitApp(App[None]):
             if item.path in set(paths) and item.requires_admin
         ]
         admin_note = (
-            f"\n• {len(admin_items)} sistem dosyası için yönetici izni istenecek."
+            f"\n• Administrator privileges will be requested for {len(admin_items)} system path(s)."
             if admin_items
             else ""
         )
         body = (
-            f"Seçili [bold]{len(dry.trashed)}[/bold] öğe Çöp Kutusu'na taşınacak.\n"
-            f"Açılacak alan: [bold green]{format_bytes(dry.reclaimed_bytes)}[/bold green]{admin_note}"
+            f"Selected [bold]{len(dry.trashed)}[/bold] item(s) will be moved to Trash.\n"
+            f"Reclaimed space: [bold green]{format_bytes(dry.reclaimed_bytes)}[/bold green]{admin_note}"
         )
 
         def on_confirm(confirmed: Optional[bool]) -> None:
             if not confirmed:
-                self._set_status("İşlem iptal edildi.")
+                self._set_status("Operation cancelled.")
                 return
             res = execute_path_removal(
                 paths,
@@ -886,11 +891,11 @@ class PurgeKitApp(App[None]):
                 home=self._home,
             )
             msg = (
-                f"[green]✓ Tamamlandı:[/green] {len(res.trashed)} öğe Çöp Kutusu'na taşındı "
+                f"[green]✓ Completed:[/green] {len(res.trashed)} item(s) moved to Trash "
                 f"({format_bytes(res.reclaimed_bytes)})."
             )
             if res.failed:
-                msg += f" | [red]{len(res.failed)} hata![/red]"
+                msg += f" | [red]{len(res.failed)} error(s)![/red]"
             self._set_status(msg)
             on_done()
 
@@ -902,7 +907,7 @@ class PurgeKitApp(App[None]):
             self._confirm_and_remove_paths(
                 self._selected_paths_for("#orphans-list"),
                 label="OrphanCleanup",
-                modal_title="Yetim Artıkları Taşı",
+                modal_title="Trash Orphaned Leftovers",
                 on_done=self._scan_orphans_worker,
             )
             return
@@ -911,16 +916,16 @@ class PurgeKitApp(App[None]):
             self._confirm_and_remove_paths(
                 self._selected_paths_for("#files-list"),
                 label="FileCleanup",
-                modal_title="Seçili Dosyaları Çöp Kutusu'na Taşı",
+                modal_title="Move Selected Files to Trash",
                 on_done=lambda: self._start_file_search(self.query_one("#file-search-input", Input).value),
             )
             return
 
         if not self._current_scan:
-            self._set_status("Önce bir uygulama seçin.")
+            self._set_status("Select an application first.")
             return
         if self._current_scan.app.is_protected:
-            self._set_status(f"[red]{self._current_scan.app.name} sistem korumalı olduğu için kaldırılamaz.[/red]")
+            self._set_status(f"[red]{self._current_scan.app.name} is system-protected and cannot be removed.[/red]")
             return
 
         selected = self._selected_paths_for("#leftovers-list")
@@ -938,19 +943,19 @@ class PurgeKitApp(App[None]):
         ]
         extra = ""
         if self._current_scan.running_processes:
-            extra += f"\n• {len(self._current_scan.running_processes)} çalışan süreç durdurulacak."
+            extra += f"\n• {len(self._current_scan.running_processes)} running process(es) will be stopped."
         if admin_items:
-            extra += f"\n• {len(admin_items)} sistem dosyası için yönetici izni istenecek."
+            extra += f"\n• Administrator privileges will be requested for {len(admin_items)} system item(s)."
 
         body = (
-            f"[bold]{self._current_scan.app.name}[/bold] ve seçili [bold]{len(selected)}[/bold] artık öğe "
-            f"Çöp Kutusu'na taşınacak.\n"
-            f"Açılacak alan: [bold green]{format_bytes(dry.reclaimed_bytes)}[/bold green]{extra}"
+            f"[bold]{self._current_scan.app.name}[/bold] and [bold]{len(selected)}[/bold] selected leftover(s) "
+            f"will be moved to Trash.\n"
+            f"Reclaimed space: [bold green]{format_bytes(dry.reclaimed_bytes)}[/bold green]{extra}"
         )
 
         def on_confirm(confirmed: Optional[bool]) -> None:
             if not confirmed or not self._current_scan:
-                self._set_status("Kaldırma iptal edildi.")
+                self._set_status("Uninstall cancelled.")
                 return
             res = execute_removal(
                 self._current_scan,
@@ -962,15 +967,15 @@ class PurgeKitApp(App[None]):
                 home=self._home,
             )
             msg = (
-                f"[green]✓ Tamamlandı:[/green] {len(res.trashed)} öğe Çöp Kutusu'na taşındı "
+                f"[green]✓ Completed:[/green] {len(res.trashed)} item(s) moved to Trash "
                 f"({format_bytes(res.reclaimed_bytes)})."
             )
             if res.failed:
-                msg += f" | [red]{len(res.failed)} hata![/red]"
+                msg += f" | [red]{len(res.failed)} error(s)![/red]"
             self._set_status(msg)
             self._load_apps_worker()
 
-        self.push_screen(ConfirmRemovalModal("Uygulamayı Kaldır", body), on_confirm)
+        self.push_screen(ConfirmRemovalModal("Uninstall Application", body), on_confirm)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id

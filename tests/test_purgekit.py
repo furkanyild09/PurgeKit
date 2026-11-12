@@ -307,7 +307,7 @@ def test_tui_smoke_flow(tmp_path: Path) -> None:
 
             # Prominent theme button & cycling via 't'
             theme_btn = tui.query_one("#btn-theme", Button)
-            assert "Tema:" in str(theme_btn.label)
+            assert "Theme:" in str(theme_btn.label)
             initial_theme = tui.theme
             await pilot.press("t")
             await pilot.pause(0.05)
@@ -332,7 +332,7 @@ def test_tui_smoke_flow(tmp_path: Path) -> None:
 
             # Check metric cards and toggle sort via 's'
             metric_text = str(tui.query_one("#metric-total", Static).render())
-            assert "Toplam Alan" in metric_text
+            assert "Total Freed" in metric_text
             await pilot.press("s")
             await pilot.pause(0.05)
             assert tui._sort_by == "size"
@@ -674,3 +674,54 @@ def test_tui_file_search_from_app_search(tmp_path: Path) -> None:
             assert any(str(target) == str(opt.value) for opt in files_list.options)
 
     asyncio.run(scenario())
+
+
+def test_file_search_deep_unicode_and_multi_token(tmp_path: Path) -> None:
+    import unicodedata
+    from purgekit.filesearch import search_files
+
+    home = tmp_path / "home"
+    sys_root = tmp_path / "sys_root"
+    deep_dir = home / "Documents" / "Work" / "2026" / "Q4" / "Invoices"
+    custom_dir = home / "Projects" / "ClientPortal"
+    deep_dir.mkdir(parents=True)
+    custom_dir.mkdir(parents=True)
+    sys_root.mkdir(parents=True)
+
+    # Finder-style NFD decomposed filename with Turkish characters
+    nfd_name = unicodedata.normalize("NFD", "Müşteri_Ödeme_2026.pdf")
+    nfd_file = deep_dir / nfd_name
+    nfd_file.write_bytes(b"pdf-bytes")
+
+    project_file = custom_dir / "İstanbul_Notlar.txt"
+    project_file.write_text("notes", encoding="utf-8")
+
+    # 1. NFC Turkish query should match NFD deep file (depth 5 inside Documents)
+    hit_turkish = search_files(
+        "müşteri",
+        scope="user",
+        home=home,
+        system_root=sys_root,
+        use_spotlight=False,
+    )
+    assert any(item.path.name == nfd_name for item in hit_turkish)
+
+    # 2. ASCII-folded + multi-token query should also match decomposed Turkish filename
+    hit_multi = search_files(
+        "musteri odeme",
+        scope="user",
+        home=home,
+        system_root=sys_root,
+        use_spotlight=False,
+    )
+    assert any(item.path.name == nfd_name for item in hit_multi)
+
+    # 3. Custom top-level folder (~/Projects/...) & uppercase Turkish İ -> i folding
+    hit_istanbul = search_files(
+        "istanbul",
+        scope="user",
+        home=home,
+        system_root=sys_root,
+        use_spotlight=False,
+    )
+    assert any(item.path == project_file for item in hit_istanbul)

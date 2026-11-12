@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -23,9 +25,11 @@ from purgekit.scanner import scan_app_leftovers, scan_orphans
 from purgekit.uninstaller import default_history_dir, execute_path_removal, execute_removal, load_history
 from purgekit.utils import format_bytes
 
+REPO_GIT_URL = "git+https://github.com/furkanyild09/PurgeKit.git"
+
 app = typer.Typer(
     name="purgekit",
-    help="Smart macOS application uninstaller and leftover scanner (CLI & TUI).",
+    help="Smart macOS application uninstaller, file finder, and leftover scanner (CLI & TUI).",
 )
 console = Console()
 
@@ -33,14 +37,15 @@ console = Console()
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
-    include_system: bool = typer.Option(False, "--system", help="Sistem uygulamalarını da salt-okunur olarak listele."),
-    resize: bool = typer.Option(True, "--resize/--no-resize", help="Başlangıçta terminal penceresini otomatik olarak TUI'a göre genişlet."),
+    include_system: bool = typer.Option(False, "--system", help="Also list Apple system apps in read-only mode."),
+    resize: bool = typer.Option(True, "--resize/--no-resize", help="Automatically enlarge the terminal window for the TUI on launch."),
 ) -> None:
     """Launch the interactive TUI directly when invoked without a subcommand."""
     if ctx.invoked_subcommand is None:
         from purgekit.ui.tui import run_tui
 
         run_tui(include_system=include_system, resize=resize)
+
 
 RISK_STYLE = {
     RiskLevel.LOW: "green",
@@ -51,22 +56,22 @@ RISK_STYLE = {
 
 def _pick_app_interactively(matches: List[AppInfo], query: str) -> Optional[AppInfo]:
     if not matches:
-        console.print(f"[red]'{query}' ile eşleşen uygulama bulunamadı.[/red]")
+        console.print(f"[red]No installed application matched '{query}'.[/red]")
         return None
     if len(matches) == 1:
         return matches[0]
 
-    table = Table(title="Birden fazla eşleşme bulundu", box=box.ROUNDED)
+    table = Table(title="Multiple matches found", box=box.ROUNDED)
     table.add_column("#", style="cyan", justify="right")
-    table.add_column("Uygulama", style="bold")
+    table.add_column("Application", style="bold")
     table.add_column("Bundle ID")
-    table.add_column("Yol")
+    table.add_column("Path")
     for idx, item in enumerate(matches, start=1):
         table.add_row(str(idx), item.name, item.bundle_id or "-", str(item.path))
     console.print(table)
 
     choice = Prompt.ask(
-        "Seçiminiz (iptal için 0)",
+        "Select number (0 to cancel)",
         default="1",
     )
     if not choice.isdigit():
@@ -79,19 +84,19 @@ def _pick_app_interactively(matches: List[AppInfo], query: str) -> Optional[AppI
 
 @app.command()
 def version() -> None:
-    """Sürüm bilgisini gösterir."""
+    """Show the current PurgeKit version."""
     console.print(f"purgekit v{__version__}")
 
 
 @app.command("list")
 def list_apps(
-    include_system: bool = typer.Option(False, "--system", help="/System/Applications altındaki sistem uygulamalarını da göster."),
-    sort_by: str = typer.Option("name", "--sort", help="Sıralama: name | size"),
-    search: Optional[str] = typer.Option(None, "--search", "-s", help="İsim veya Bundle ID filtrele."),
-    no_size: bool = typer.Option(False, "--no-size", help="Hızlı listeleme için boyut hesaplamasını atla."),
+    include_system: bool = typer.Option(False, "--system", help="Include built-in system apps under /System/Applications."),
+    sort_by: str = typer.Option("name", "--sort", help="Sort order: name | size"),
+    search: Optional[str] = typer.Option(None, "--search", "-s", help="Filter by app name or Bundle ID."),
+    no_size: bool = typer.Option(False, "--no-size", help="Skip bundle size calculation for faster listing."),
 ) -> None:
-    """Kurulu macOS uygulamalarını listeler."""
-    with console.status("Uygulamalar taranıyor..."):
+    """List installed macOS applications."""
+    with console.status("Scanning installed applications..."):
         apps = find_installed_apps(
             include_system=include_system,
             compute_sizes=not no_size,
@@ -110,11 +115,11 @@ def list_apps(
     else:
         apps.sort(key=lambda a: a.name.lower())
 
-    table = Table(title=f"Kurulu Uygulamalar ({len(apps)})", box=box.ROUNDED)
-    table.add_column("Ad", style="bold cyan")
-    table.add_column("Sürüm", justify="right")
-    table.add_column("Kaynak")
-    table.add_column("Boyut", justify="right")
+    table = Table(title=f"Installed Applications ({len(apps)})", box=box.ROUNDED)
+    table.add_column("Name", style="bold cyan")
+    table.add_column("Version", justify="right")
+    table.add_column("Source")
+    table.add_column("Size", justify="right")
     table.add_column("Bundle ID", style="dim")
 
     total_bytes = 0
@@ -136,23 +141,23 @@ def list_apps(
 
     console.print(table)
     if not no_size:
-        console.print(f"Toplam uygulama boyutu: [bold]{format_bytes(total_bytes)}[/bold]")
+        console.print(f"Total application footprint: [bold]{format_bytes(total_bytes)}[/bold]")
 
 
 @app.command()
 def scan(
-    query: str = typer.Argument(..., help="Uygulama adı, Bundle ID veya .app yolu."),
-    mode: ScanMode = typer.Option(ScanMode.MODERATE, "--mode", "-m", help="Tarama modu: safe | moderate | advanced"),
-    as_json: bool = typer.Option(False, "--json", help="Çıktıyı JSON olarak yazdır."),
+    query: str = typer.Argument(..., help="Application name, Bundle ID, or .app path."),
+    mode: ScanMode = typer.Option(ScanMode.MODERATE, "--mode", "-m", help="Scan mode: safe | moderate | advanced"),
+    as_json: bool = typer.Option(False, "--json", help="Print output as JSON."),
 ) -> None:
-    """Bir uygulamayı kaldırmadan tüm artık dosyalarını tarar."""
+    """Scan all leftover files and receipts for an application without removing anything."""
     apps = find_installed_apps(compute_sizes=False)
     matches = resolve_app(query, apps)
     target = _pick_app_interactively(matches, query)
     if not target:
         raise typer.Exit(code=1)
 
-    with console.status(f"{target.name} için artık dosyalar taranıyor ({mode.value})..."):
+    with console.status(f"Scanning leftovers for {target.name} ({mode.value})..."):
         cask_map = {target.path.name.lower(): target.cask_name} if target.cask_name else None
         detailed = (
             parse_app_bundle(target.path, cask_map=cask_map, compute_size=True, read_entitlements=True)
@@ -213,42 +218,42 @@ def _render_scan_result(result) -> None:
     if app_info.cask_name:
         extra_meta += f" | Homebrew Cask: [magenta]{app_info.cask_name}[/magenta]"
     if result.pkg_receipts:
-        extra_meta += f" | .pkg Kayıtları: [cyan]{len(result.pkg_receipts)}[/cyan]"
+        extra_meta += f" | .pkg Receipts: [cyan]{len(result.pkg_receipts)}[/cyan]"
 
     summary = (
         f"[bold]{app_info.name}[/bold] ({app_info.version or '?'})\n"
-        f"Yol: {app_info.path}\n"
+        f"Path: {app_info.path}\n"
         f"Bundle ID: {app_info.bundle_id or '-'}{extra_meta}\n"
-        f"Uygulama Boyutu: [cyan]{format_bytes(app_info.size_bytes)}[/cyan] | "
-        f"Artık Dosyalar ({len(result.leftovers)}): [yellow]{format_bytes(result.leftover_size_bytes)}[/yellow] | "
-        f"Toplam: [bold green]{format_bytes(result.total_size_bytes)}[/bold green]"
+        f"App Size: [cyan]{format_bytes(app_info.size_bytes)}[/cyan] | "
+        f"Leftovers ({len(result.leftovers)}): [yellow]{format_bytes(result.leftover_size_bytes)}[/yellow] | "
+        f"Total: [bold green]{format_bytes(result.total_size_bytes)}[/bold green]"
     )
-    console.print(Panel(summary, title=f"Tarama Sonucu ({result.mode.value})", expand=False))
+    console.print(Panel(summary, title=f"Scan Result ({result.mode.value})", expand=False))
 
     for warn in result.warnings:
-        console.print(f"[yellow]Uyarı:[/yellow] {warn}")
+        console.print(f"[yellow]Warning:[/yellow] {warn}")
 
     if result.running_processes:
-        proc_table = Table(title="Çalışan Süreçler", box=box.SIMPLE)
+        proc_table = Table(title="Running Processes", box=box.SIMPLE)
         proc_table.add_column("PID", justify="right")
-        proc_table.add_column("Süreç")
-        proc_table.add_column("Yürütülebilir Dosya", style="dim")
+        proc_table.add_column("Process")
+        proc_table.add_column("Executable", style="dim")
         for proc in result.running_processes:
             proc_table.add_row(str(proc.pid), proc.name, proc.exe or "-")
         console.print(proc_table)
 
     if not result.leftovers:
-        console.print("[green]Eşleşen artık dosya bulunamadı.[/green]")
+        console.print("[green]No matching leftover files found.[/green]")
         return
 
-    table = Table(title="Tespit Edilen Artık Dosyalar", box=box.ROUNDED)
+    table = Table(title="Detected Leftover Files", box=box.ROUNDED)
     table.add_column("#", justify="right", style="cyan")
-    table.add_column("Seçili", justify="center")
+    table.add_column("Selected", justify="center")
     table.add_column("Risk")
-    table.add_column("Kategori")
-    table.add_column("Boyut", justify="right")
-    table.add_column("Yol")
-    table.add_column("Eşleşme Nedeni", style="dim")
+    table.add_column("Category")
+    table.add_column("Size", justify="right")
+    table.add_column("Path")
+    table.add_column("Match Reason", style="dim")
 
     for idx, item in enumerate(result.leftovers, start=1):
         style = RISK_STYLE[item.risk]
@@ -268,17 +273,17 @@ def _render_scan_result(result) -> None:
 
 @app.command()
 def uninstall(
-    query: str = typer.Argument(..., help="Kaldırılacak uygulama adı, Bundle ID veya .app yolu."),
-    mode: ScanMode = typer.Option(ScanMode.MODERATE, "--mode", "-m", help="Tarama modu: safe | moderate | advanced"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Hiçbir dosyayı silmeden yalnızca simülasyon yapar."),
-    permanent: bool = typer.Option(False, "--permanent", help="Çöp Kutusu yerine kalıcı olarak siler."),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Onay istemeden varsayılan seçili öğeleri kaldırır."),
-    admin: bool = typer.Option(False, "--admin", help="/Library gibi sistem yolları için yönetici izni ister."),
-    forget_pkgs: bool = typer.Option(False, "--forget-pkgs", help="Eşleşen .pkg receipt kayıtlarını `pkgutil --forget` ile temizler (--admin gerektirir)."),
-    use_brew: bool = typer.Option(False, "--brew", help="Homebrew Cask ise önce `brew uninstall --cask` çalıştırır."),
-    app_only: bool = typer.Option(False, "--app-only", help="Artık dosyaları bırakıp yalnızca .app paketini kaldırır."),
+    query: str = typer.Argument(..., help="Application name, Bundle ID, or .app path to uninstall."),
+    mode: ScanMode = typer.Option(ScanMode.MODERATE, "--mode", "-m", help="Scan mode: safe | moderate | advanced"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without deleting any files."),
+    permanent: bool = typer.Option(False, "--permanent", help="Delete permanently instead of moving to Trash."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Uninstall default selected items without confirmation."),
+    admin: bool = typer.Option(False, "--admin", help="Prompt for administrator privileges for system paths under /Library."),
+    forget_pkgs: bool = typer.Option(False, "--forget-pkgs", help="Run `pkgutil --forget` on matching .pkg receipts (requires --admin)."),
+    use_brew: bool = typer.Option(False, "--brew", help="Run `brew uninstall --cask` first if managed by Homebrew."),
+    app_only: bool = typer.Option(False, "--app-only", help="Remove only the .app bundle and leave leftovers untouched."),
 ) -> None:
-    """Uygulamayı ve seçilen artık dosyalarını güvenli şekilde kaldırır."""
+    """Safely uninstall an application and its selected leftover items."""
     apps = find_installed_apps(compute_sizes=False)
     matches = resolve_app(query, apps)
     target = _pick_app_interactively(matches, query)
@@ -286,10 +291,10 @@ def uninstall(
         raise typer.Exit(code=1)
 
     if target.is_protected:
-        console.print(f"[red]{target.name} sistem korumalı bir uygulamadır ve kaldırılamaz.[/red]")
+        console.print(f"[red]{target.name} is system-protected and cannot be removed.[/red]")
         raise typer.Exit(code=1)
 
-    with console.status(f"{target.name} analiz ediliyor..."):
+    with console.status(f"Analyzing {target.name}..."):
         cask_map = {target.path.name.lower(): target.cask_name} if target.cask_name else None
         detailed = (
             parse_app_bundle(target.path, cask_map=cask_map, compute_size=True, read_entitlements=True)
@@ -309,13 +314,12 @@ def uninstall(
 
         if not yes and not dry_run and result.leftovers:
             custom = Prompt.ask(
-                "Hariç tutmak veya eklemek istediğiniz numara var mı? (Boş bırakın = varsayılan ✓ seçililer, 'all' = tümü)",
+                "Override selection by index? (Enter = default ✓ items, 'all' = everything, or comma-separated e.g. 1,2)",
                 default="",
             ).strip()
             if custom.lower() == "all":
                 selected_paths = [item.path for item in result.leftovers]
             elif custom:
-                # Allow comma-separated explicit index selection
                 chosen: List[Path] = []
                 for token in custom.split(","):
                     token = token.strip()
@@ -339,24 +343,24 @@ def uninstall(
             allow_admin=admin,
             forget_pkgs=forget_pkgs,
         )
-        pkg_note = f" | Unutulacak .pkg: {len(outcome.forgotten_pkgs)}" if outcome.forgotten_pkgs else ""
+        pkg_note = f" | .pkg receipts to forget: {len(outcome.forgotten_pkgs)}" if outcome.forgotten_pkgs else ""
         console.print(
             Panel(
-                f"[cyan]DRY-RUN SİMÜLASYONU[/cyan]: {len(outcome.trashed) + len(outcome.deleted_permanently)} öğe "
-                f"kaldırılacaktı ({format_bytes(outcome.reclaimed_bytes)} alan kazanılacaktı){pkg_note}.",
+                f"[cyan]DRY-RUN PREVIEW[/cyan]: {len(outcome.trashed) + len(outcome.deleted_permanently)} item(s) "
+                f"would be removed ({format_bytes(outcome.reclaimed_bytes)} reclaimed){pkg_note}.",
                 expand=False,
             )
         )
         return
 
-    action_label = "KALICI OLARAK SİLİNECEK" if permanent else "Çöp Kutusu'na taşınacak"
+    action_label = "PERMANENTLY DELETED" if permanent else "moved to Trash"
     if not yes:
         confirmed = Confirm.ask(
-            f"[bold]{result.app.name}[/bold] ve {len(selected_paths)} artık öğe {action_label}. Devam edilsin mi?",
+            f"[bold]{result.app.name}[/bold] and {len(selected_paths)} leftover item(s) will be {action_label}. Continue?",
             default=False,
         )
         if not confirmed:
-            console.print("[yellow]İşlem iptal edildi.[/yellow]")
+            console.print("[yellow]Operation cancelled.[/yellow]")
             raise typer.Exit(code=0)
 
     include_app_bundle = True
@@ -366,7 +370,7 @@ def uninstall(
             console.print(f"[magenta]Homebrew:[/magenta] {brew_msg}")
             include_app_bundle = not result.app.path.exists()
         else:
-            console.print(f"[yellow]Homebrew uyarısı:[/yellow] {brew_msg}")
+            console.print(f"[yellow]Homebrew warning:[/yellow] {brew_msg}")
 
     outcome = execute_removal(
         result,
@@ -380,25 +384,25 @@ def uninstall(
 
     removed_count = len(outcome.trashed) + len(outcome.deleted_permanently)
     console.print(
-        f"[green]Tamamlandı:[/green] {removed_count} öğe kaldırıldı, "
-        f"[bold]{format_bytes(outcome.reclaimed_bytes)}[/bold] alan açıldı."
+        f"[green]Completed:[/green] {removed_count} item(s) removed, "
+        f"[bold]{format_bytes(outcome.reclaimed_bytes)}[/bold] freed."
     )
     if outcome.forgotten_pkgs:
-        console.print(f"Unutulan .pkg kayıtları: {', '.join(outcome.forgotten_pkgs)}")
+        console.print(f"Forgotten .pkg receipts: {', '.join(outcome.forgotten_pkgs)}")
     if outcome.manifest_path:
-        console.print(f"İşlem kaydı: [dim]{outcome.manifest_path}[/dim]")
+        console.print(f"Audit log: [dim]{outcome.manifest_path}[/dim]")
     if outcome.failed:
-        console.print("[red]Başarısız öğeler:[/red]")
+        console.print("[red]Failed items:[/red]")
         for path, err in outcome.failed:
             console.print(f"  - {path}: {err}")
 
 
 @app.command()
 def orphans(
-    min_kb: int = typer.Option(0, "--min-kb", help="En az bu KB boyutundaki yetim artıkları listele."),
+    min_kb: int = typer.Option(0, "--min-kb", help="Only show orphans at least this many KB."),
 ) -> None:
-    """Önceden normal yolla silinmiş uygulamalardan kalan yetim Library artıklarını listeler."""
-    with console.status("Yetim artıklar taranıyor..."):
+    """List orphaned Library leftovers from previously removed applications."""
+    with console.status("Scanning for orphaned leftovers..."):
         apps = find_installed_apps(compute_sizes=False, read_entitlements=True)
         items = scan_orphans(apps)
 
@@ -406,22 +410,22 @@ def orphans(
         items = [i for i in items if i.size_bytes >= min_kb * 1024]
 
     if not items:
-        console.print("[green]Dikkat çekici bir yetim artık bulunamadı.[/green]")
+        console.print("[green]No notable orphaned leftovers found.[/green]")
         return
 
-    table = Table(title=f"Yetim Artık Dosyalar ({len(items)})", box=box.ROUNDED)
-    table.add_column("Kategori")
+    table = Table(title=f"Orphaned Leftovers ({len(items)})", box=box.ROUNDED)
+    table.add_column("Category")
     table.add_column("Risk")
-    table.add_column("Boyut", justify="right")
-    table.add_column("Tanımlayıcı", style="cyan")
-    table.add_column("Not", style="yellow")
-    table.add_column("Yol", style="dim")
+    table.add_column("Size", justify="right")
+    table.add_column("Identifier", style="cyan")
+    table.add_column("Note", style="yellow")
+    table.add_column("Path", style="dim")
 
     total = 0
     for item in items:
         total += item.size_bytes
         style = RISK_STYLE[item.risk]
-        note = f"ortak geliştirici: {item.shared_vendor}" if item.shared_vendor else "-"
+        note = f"shared vendor: {item.shared_vendor}" if item.shared_vendor else "-"
         table.add_row(
             item.category,
             f"[{style}]{item.risk.value}[/{style}]",
@@ -431,34 +435,34 @@ def orphans(
             str(item.path),
         )
     console.print(table)
-    console.print(f"Toplam yetim artık boyutu: [bold]{format_bytes(total)}[/bold]")
+    console.print(f"Total orphan footprint: [bold]{format_bytes(total)}[/bold]")
 
 
 @app.command()
 def find(
-    query: str = typer.Argument(..., help="Aranacak dosya veya klasör adı."),
-    scope: str = typer.Option("user", "--scope", "-s", help="Arama kapsamı: user | library | all"),
-    item_type: str = typer.Option("all", "--type", "-t", help="Tür filtresi: all | file | dir"),
-    limit: int = typer.Option(60, "--limit", "-n", help="Maksimum sonuç sayısı."),
-    trash: bool = typer.Option(False, "--trash", help="Seçilen numaraları etkileşimli olarak Çöp Kutusu'na taşır."),
-    dry_run: bool = typer.Option(False, "--dry-run", help="--trash ile silmeden önizleme yapar."),
-    admin: bool = typer.Option(False, "--admin", help="/Library gibi sistem yolları için yönetici izni ister."),
+    query: str = typer.Argument(..., help="File or folder name to search for."),
+    scope: str = typer.Option("user", "--scope", "-s", help="Search scope: user | library | all"),
+    item_type: str = typer.Option("all", "--type", "-t", help="Item type filter: all | file | dir"),
+    limit: int = typer.Option(60, "--limit", "-n", help="Maximum number of results."),
+    trash: bool = typer.Option(False, "--trash", help="Interactively move selected results to Trash."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview removal without deleting when used with --trash."),
+    admin: bool = typer.Option(False, "--admin", help="Allow admin prompt for protected /Library paths."),
 ) -> None:
-    """Mac'te dosya ve klasörleri (Spotlight + ~/Library + Kullanıcı dizinleri) arar ve isteğe bağlı kaldırır."""
-    with console.status(f"'{query}' için dosya ve klasörler aranıyor ({scope})..."):
+    """Search for files and folders across macOS (Spotlight + ~/Library + User dirs) and optionally trash them."""
+    with console.status(f"Searching Mac for '{query}' ({scope})..."):
         items = search_files(query=query, scope=scope, item_type=item_type, limit=limit)
 
     if not items:
-        console.print(f"[yellow]'{query}' ile eşleşen dosya veya klasör bulunamadı.[/yellow]")
+        console.print(f"[yellow]No files or folders matched '{query}'.[/yellow]")
         return
 
-    table = Table(title=f"Bulunan Dosya & Klasörler ({len(items)})", box=box.ROUNDED)
+    table = Table(title=f"Found Files & Folders ({len(items)})", box=box.ROUNDED)
     table.add_column("#", justify="right", style="cyan")
-    table.add_column("Tür", justify="center")
+    table.add_column("Type", justify="center")
     table.add_column("Risk")
-    table.add_column("Boyut", justify="right")
-    table.add_column("Kaynak", style="dim")
-    table.add_column("Yol")
+    table.add_column("Size", justify="right")
+    table.add_column("Source", style="dim")
+    table.add_column("Path")
 
     total = 0
     for idx, item in enumerate(items, start=1):
@@ -467,19 +471,19 @@ def find(
         admin_tag = " [admin]" if item.requires_admin else ""
         table.add_row(
             str(idx),
-            "Klasör" if item.is_dir else "Dosya",
+            "Folder" if item.is_dir else "File",
             f"[{style}]{item.risk.value}{admin_tag}[/{style}]",
             format_bytes(item.size_bytes),
             item.source,
             str(item.path),
         )
     console.print(table)
-    console.print(f"Toplam bulunan boyut: [bold]{format_bytes(total)}[/bold]")
+    console.print(f"Total matched size: [bold]{format_bytes(total)}[/bold]")
 
     if not trash:
         return
 
-    raw = Prompt.ask("Çöp Kutusu'na taşınacak numaralar (ör. 1,3 veya 'all', iptal için Enter)", default="").strip()
+    raw = Prompt.ask("Enter item numbers to move to Trash (e.g. 1,3 or 'all', Enter to cancel)", default="").strip()
     if not raw:
         return
     if raw.lower() == "all":
@@ -494,26 +498,26 @@ def find(
                     selected_paths.append(items[idx - 1].path)
 
     if not selected_paths:
-        console.print("[yellow]Geçerli öğe seçilmedi.[/yellow]")
+        console.print("[yellow]No valid items selected.[/yellow]")
         return
 
     if dry_run:
         outcome = execute_path_removal(selected_paths, label="FileCleanup", dry_run=True, allow_admin=admin)
         console.print(
             Panel(
-                f"[cyan]DRY-RUN:[/cyan] {len(outcome.trashed)} öğe Çöp Kutusu'na taşınacaktı ({format_bytes(outcome.reclaimed_bytes)}).",
+                f"[cyan]DRY-RUN:[/cyan] {len(outcome.trashed)} item(s) would be moved to Trash ({format_bytes(outcome.reclaimed_bytes)}).",
                 expand=False,
             )
         )
         return
 
-    if not Confirm.ask(f"Seçili {len(selected_paths)} öğe Çöp Kutusu'na taşınacak. Onaylıyor musunuz?", default=False):
-        console.print("[yellow]İşlem iptal edildi.[/yellow]")
+    if not Confirm.ask(f"Move {len(selected_paths)} selected item(s) to Trash?", default=False):
+        console.print("[yellow]Operation cancelled.[/yellow]")
         return
 
     outcome = execute_path_removal(selected_paths, label="FileCleanup", dry_run=False, allow_admin=admin)
     console.print(
-        f"[green]Tamamlandı:[/green] {len(outcome.trashed)} öğe Çöp Kutusu'na taşındı ({format_bytes(outcome.reclaimed_bytes)})."
+        f"[green]Completed:[/green] {len(outcome.trashed)} item(s) moved to Trash ({format_bytes(outcome.reclaimed_bytes)})."
     )
     if outcome.failed:
         for p, err in outcome.failed:
@@ -522,10 +526,10 @@ def find(
 
 @app.command()
 def ui(
-    include_system: bool = typer.Option(False, "--system", help="Sistem uygulamalarını da salt-okunur olarak listele."),
-    resize: bool = typer.Option(True, "--resize/--no-resize", help="Başlangıçta terminal penceresini otomatik olarak TUI'a göre genişlet."),
+    include_system: bool = typer.Option(False, "--system", help="Also list Apple system apps in read-only mode."),
+    resize: bool = typer.Option(True, "--resize/--no-resize", help="Automatically enlarge the terminal window for the TUI on launch."),
 ) -> None:
-    """Etkileşimli Textual terminal arayüzünü (TUI) başlatır."""
+    """Launch the interactive Textual terminal UI (TUI)."""
     from purgekit.ui.tui import run_tui
 
     run_tui(include_system=include_system, resize=resize)
@@ -533,40 +537,40 @@ def ui(
 
 @app.command()
 def doctor() -> None:
-    """macOS izinlerini (Full Disk Access) ve sistem araçlarını kontrol eder."""
+    """Check macOS permissions (Full Disk Access) and required system tools."""
     has_fda, blocked = check_full_disk_access()
     codesign_ok = shutil.which("codesign") is not None
     pkgutil_ok = shutil.which("pkgutil") is not None
     launchctl_ok = shutil.which("launchctl") is not None
     hist_dir = default_history_dir()
 
-    table = Table(title="PurgeKit Sistem & İzin Kontrolü", box=box.ROUNDED)
-    table.add_column("Kontrol", style="bold")
-    table.add_column("Durum")
-    table.add_column("Detay")
+    table = Table(title="PurgeKit System & Permission Check", box=box.ROUNDED)
+    table.add_column("Check", style="bold")
+    table.add_column("Status")
+    table.add_column("Details")
 
     table.add_row(
         "Full Disk Access",
-        "[green]TAMAM[/green]" if has_fda else "[yellow]EKSİK[/yellow]",
-        "Tüm korumalı dizinler okunabiliyor."
+        "[green]OK[/green]" if has_fda else "[yellow]MISSING[/yellow]",
+        "All protected Library directories are readable."
         if has_fda
-        else f"Erişilemeyen yollar: {', '.join(str(p) for p in blocked)}",
+        else f"Restricted paths: {', '.join(str(p) for p in blocked)}",
     )
-    table.add_row("codesign", "[green]VAR[/green]" if codesign_ok else "[red]YOK[/red]", "App Groups entitlements okuma")
-    table.add_row("pkgutil", "[green]VAR[/green]" if pkgutil_ok else "[red]YOK[/red]", ".pkg kurulum kayıtları tarama")
-    table.add_row("launchctl", "[green]VAR[/green]" if launchctl_ok else "[red]YOK[/red]", "LaunchAgent/Daemon durdurma")
+    table.add_row("codesign", "[green]OK[/green]" if codesign_ok else "[red]MISSING[/red]", "App Groups entitlement inspection")
+    table.add_row("pkgutil", "[green]OK[/green]" if pkgutil_ok else "[red]MISSING[/red]", ".pkg installer receipt lookup")
+    table.add_row("launchctl", "[green]OK[/green]" if launchctl_ok else "[red]MISSING[/red]", "LaunchAgent/Daemon unloading")
     brew_bin = find_brew_binary()
-    table.add_row("brew", "[green]VAR[/green]" if brew_bin else "[dim]YOK[/dim]", brew_bin or "Homebrew kurulu değil (opsiyonel)")
-    table.add_row("Kayıt Dizini", "[green]HAZIR[/green]", str(hist_dir))
+    table.add_row("brew", "[green]OK[/green]" if brew_bin else "[dim]N/A[/dim]", brew_bin or "Homebrew not installed (optional)")
+    table.add_row("History Dir", "[green]READY[/green]", str(hist_dir))
     console.print(table)
 
 
 @app.command()
 def pkg(
-    query: str = typer.Argument(..., help="Uygulama adı/Bundle ID veya doğrudan .pkg kimliği."),
-    show_files: bool = typer.Option(False, "--files", "-f", help=".app dışındaki kurulu dosyaları da listele."),
+    query: str = typer.Argument(..., help="Application name/Bundle ID or explicit .pkg receipt ID."),
+    show_files: bool = typer.Option(False, "--files", "-f", help="List installed files outside the .app bundle."),
 ) -> None:
-    """Bir uygulamaya ait .pkg kurulum kayıtlarını (pkgutil receipts) inceler."""
+    """Inspect `.pkg` installer receipts (pkgutil) associated with an application."""
     apps = find_installed_apps(compute_sizes=False)
     matches = resolve_app(query, apps)
     app_path: Optional[Path] = None
@@ -581,14 +585,14 @@ def pkg(
 
     receipts = [r for pid in pkg_ids for r in (inspect_pkg_receipt(pid, app_path=app_path),) if r]
     if not receipts:
-        console.print(f"[yellow]{header} için eşleşen .pkg kaydı bulunamadı.[/yellow]")
+        console.print(f"[yellow]No matching .pkg receipts found for {header}.[/yellow]")
         return
 
-    table = Table(title=f".pkg Kurulum Kayıtları — {header}", box=box.ROUNDED)
-    table.add_column("Paket Kimliği", style="cyan")
-    table.add_column("Sürüm", justify="right")
-    table.add_column("Harici Dosya", justify="right")
-    table.add_column("Boyut", justify="right")
+    table = Table(title=f".pkg Installer Receipts — {header}", box=box.ROUNDED)
+    table.add_column("Package ID", style="cyan")
+    table.add_column("Version", justify="right")
+    table.add_column("External Files", justify="right")
+    table.add_column("Size", justify="right")
 
     for rec in receipts:
         table.add_row(
@@ -603,54 +607,54 @@ def pkg(
         for rec in receipts:
             if not rec.external_files:
                 continue
-            console.print(f"\n[bold cyan]{rec.pkg_id}[/bold cyan] (.app dışı dosyalar):")
+            console.print(f"\n[bold cyan]{rec.pkg_id}[/bold cyan] (files outside .app):")
             for f in rec.external_files[:100]:
                 console.print(f"  - {f}")
             if len(rec.external_files) > 100:
-                console.print(f"  ... (+{len(rec.external_files) - 100} dosya daha)")
+                console.print(f"  ... (+{len(rec.external_files) - 100} more files)")
 
 
 @app.command()
 def history(
-    limit: int = typer.Option(15, "--limit", "-n", help="Gösterilecek son işlem sayısı."),
-    detail: Optional[int] = typer.Option(None, "--detail", "-d", help="Detayı görüntülenecek satır numarası (1 = en son)."),
+    limit: int = typer.Option(15, "--limit", "-n", help="Number of recent operations to display."),
+    detail: Optional[int] = typer.Option(None, "--detail", "-d", help="Show details for entry number (1 = most recent)."),
 ) -> None:
-    """Geçmiş kaldırma işlemlerinin dökümünü gösterir."""
+    """Show audit history of past uninstall and cleanup actions."""
     records = load_history(limit=limit)
     if not records:
-        console.print("[dim]Henüz kayıtlı kaldırma işlemi yok.[/dim]")
+        console.print("[dim]No recorded removal operations yet.[/dim]")
         return
 
     if detail is not None:
         if detail < 1 or detail > len(records):
-            console.print(f"[red]Geçersiz kayıt numarası: {detail} (1..{len(records)})[/red]")
+            console.print(f"[red]Invalid entry number: {detail} (1..{len(records)})[/red]")
             raise typer.Exit(code=1)
         rec = records[detail - 1]
         console.print(
             Panel(
                 f"[bold]{rec.get('app_name')}[/bold] ({rec.get('bundle_id') or '-'})\n"
-                f"Tarih (UTC): {rec.get('timestamp_utc')}\n"
-                f"Açılan Alan: {format_bytes(int(rec.get('reclaimed_bytes', 0)))}\n"
-                f"Dosya: {rec.get('_file')}",
-                title="İşlem Detayı",
+                f"Timestamp (UTC): {rec.get('timestamp_utc')}\n"
+                f"Reclaimed Space: {format_bytes(int(rec.get('reclaimed_bytes', 0)))}\n"
+                f"Manifest: {rec.get('_file')}",
+                title="Operation Details",
                 expand=False,
             )
         )
         for p in rec.get("trashed", []):
-            console.print(f"  [yellow][Çöp][/yellow] {p}")
+            console.print(f"  [yellow][Trashed][/yellow] {p}")
         for p in rec.get("deleted_permanently", []):
-            console.print(f"  [red][Silindi][/red] {p}")
+            console.print(f"  [red][Deleted][/red] {p}")
         for pkg_id in rec.get("forgotten_pkgs", []):
             console.print(f"  [cyan][pkgutil --forget][/cyan] {pkg_id}")
         return
 
-    table = Table(title="Kaldırma Geçmişi", box=box.ROUNDED)
+    table = Table(title="Removal History", box=box.ROUNDED)
     table.add_column("#", justify="right", style="cyan")
-    table.add_column("Tarih (UTC)")
-    table.add_column("Uygulama", style="bold")
-    table.add_column("Çöp Kutusu", justify="right")
-    table.add_column("Kalıcı", justify="right")
-    table.add_column("Açılan Alan", justify="right")
+    table.add_column("Timestamp (UTC)")
+    table.add_column("Target", style="bold")
+    table.add_column("Trashed", justify="right")
+    table.add_column("Permanent", justify="right")
+    table.add_column("Reclaimed", justify="right")
 
     for idx, rec in enumerate(records, start=1):
         table.add_row(
@@ -662,6 +666,21 @@ def history(
             format_bytes(int(rec.get("reclaimed_bytes", 0))),
         )
     console.print(table)
+
+
+@app.command()
+def update(
+    source: str = typer.Option(REPO_GIT_URL, "--source", help="Git URL or local path to upgrade PurgeKit from."),
+) -> None:
+    """Update PurgeKit in the active environment with one command."""
+    cmd = [sys.executable, "-m", "pip", "install", "--quiet", "--upgrade", source]
+    with console.status("Updating PurgeKit..."):
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or f"pip exited with code {proc.returncode}").strip()
+        console.print(f"[red]Update failed:[/red] {err}")
+        raise typer.Exit(code=1)
+    console.print("[green]PurgeKit updated successfully![/green] Run `purgekit` to launch the latest version.")
 
 
 if __name__ == "__main__":
