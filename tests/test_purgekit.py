@@ -729,3 +729,172 @@ def test_file_search_deep_unicode_and_multi_token(tmp_path: Path) -> None:
         use_spotlight=False,
     )
     assert any(item.path == project_file for item in hit_istanbul)
+
+
+def test_space_sweep_and_disk_lens(tmp_path: Path) -> None:
+    from purgekit.sweeper import scan_space_lens, scan_sweep_targets
+
+    home = tmp_path / "home"
+    downloads = home / "Downloads"
+    derived = home / "Library" / "Developer" / "Xcode" / "DerivedData" / "DemoApp-abc"
+    node_mods = home / "Projects" / "WebApp" / "node_modules"
+    movies = home / "Movies"
+    downloads.mkdir(parents=True)
+    derived.mkdir(parents=True)
+    node_mods.mkdir(parents=True)
+    movies.mkdir(parents=True)
+
+    dmg = downloads / "OldInstaller.dmg"
+    dmg.write_bytes(b"0" * (6 * 1024 * 1024))
+    (derived / "build.bin").write_bytes(b"1" * (11 * 1024 * 1024))
+    (node_mods / "bundle.js").write_bytes(b"2" * (11 * 1024 * 1024))
+    big_video = movies / "Recording.mov"
+    big_video.write_bytes(b"3" * (12 * 1024 * 1024))
+
+    sweep_items = scan_sweep_targets(min_mb=10, home=home)
+    by_path = {i.path: i for i in sweep_items}
+    assert dmg in by_path and by_path[dmg].category == "Installer"
+    assert derived in by_path and by_path[derived].category == "Dev Cache"
+    assert node_mods in by_path and by_path[node_mods].category == "Project Cache"
+    assert big_video in by_path and by_path[big_video].category == "Large File"
+
+    root, total, lens_entries = scan_space_lens(target_dir=home, home=home)
+    assert root == home.resolve()
+    assert total >= 39 * 1024 * 1024
+    names = {e.name: e for e in lens_entries}
+    assert "Movies" in names and names["Movies"].is_protected is True
+    assert "Projects" in names and names["Projects"].is_protected is False
+    assert abs(sum(e.share_pct for e in lens_entries) - 100.0) < 0.5
+
+
+def test_startup_services_and_trash_watcher(tmp_path: Path) -> None:
+    import plistlib
+    from purgekit.startup import scan_startup_items, unload_startup_items
+    from purgekit.watcher import find_newly_trashed_apps, scan_trashed_app_leftovers
+
+    home = tmp_path / "home"
+    sys_root = tmp_path / "sys"
+    user_agents = home / "Library" / "LaunchAgents"
+    sys_daemons = sys_root / "Library" / "LaunchDaemons"
+    trash_dir = home / ".Trash"
+    user_agents.mkdir(parents=True)
+    sys_daemons.mkdir(parents=True)
+    trash_dir.mkdir(parents=True)
+
+    user_plist = user_agents / "com.example.updater.plist"
+    with user_plist.open("wb") as fh:
+        plistlib.dump(
+            {"Label": "com.example.updater", "Program": "/usr/local/bin/updater", "RunAtLoad": True},
+            fh,
+        )
+
+    apple_plist = sys_daemons / "com.apple.example.plist"
+    with apple_plist.open("wb") as fh:
+        plistlib.dump({"Label": "com.apple.example"}, fh)
+
+    services = scan_startup_items(home=home, system_root=sys_root, include_apple=False)
+    assert len(services) == 1
+    assert services[0].label == "com.example.updater"
+    assert services[0].run_at_load is True
+
+    dry_unload = unload_startup_items([user_plist], home=home, dry_run=True)
+    assert dry_unload[user_plist][0] is True
+    assert "DRY-RUN" in dry_unload[user_plist][1]
+
+    # Trash Watcher: simulate an app dragged into ~/.Trash with a Library cache leftover
+    trashed_app = _create_fake_app(trash_dir, "TrashMe", "com.test.trashme")
+    cache = home / "Library" / "Caches" / "com.test.trashme"
+    cache.mkdir(parents=True)
+    (cache / "cache.dat").write_bytes(b"abc")
+
+    seen = set()
+    new_apps = find_newly_trashed_apps(trash_dir, seen)
+    assert new_apps == [trashed_app]
+    assert find_newly_trashed_apps(trash_dir, seen) == []
+
+    scan_res = scan_trashed_app_leftovers(
+        trashed_app,
+        installed_apps=[],
+        home=home,
+        system_root=sys_root,
+    )
+    assert scan_res is not None
+    assert any(item.path == cache for item in scan_res.leftovers)
+
+
+def test_tui_new_tabs_and_reveal_in_finder(tmp_path: Path, monkeypatch) -> None:
+    import asyncio
+    import plistlib
+    from textual.widgets import SelectionList, TabbedContent
+    import purgekit.ui.tui as tui_mod
+    from purgekit.ui.tui import PurgeKitApp
+
+    apps_dir = tmp_path / "Applications"
+    home = tmp_path / "home"
+    sys_root = tmp_path / "sys"
+    apps_dir.mkdir()
+    (home / "Downloads").mkdir(parents=True)
+    (home / "Library" / "LaunchAgents").mkdir(parents=True)
+    sys_root.mkdir()
+
+    _create_fake_app(apps_dir, "DemoTool", "com.demo.tool")
+    dmg = home / "Downloads" / "SetupTool.dmg"
+    dmg.write_bytes(b"x" * (6 * 1024 * 1024))
+    with (home / "Library" / "LaunchAgents" / "com.demo.agent.plist").open("wb") as fh:
+        plistlib.dump({"Label": "com.demo.agent"}, fh)
+
+    revealed_paths = []
+    monkeypatch.setattr(tui_mod, "_reveal_path_in_finder", lambda p: revealed_paths.append(p))
+
+    app = PurgeKitApp(
+        app_dirs=[apps_dir],
+        home=home,
+        system_root=sys_root,
+        history_dir=home / ".purgekit_history",
+        config_path=home / ".purgekit_config.json",
+    )
+
+    async def scenario() -> None:
+        async def switch_tab(tab_id: str, button_id: str) -> None:
+            await pilot.click(f"#--content-tab-{tab_id}")
+            for _ in range(25):
+                await pilot.pause(0.05)
+                if app.query_one(button_id).region.width > 0:
+                    break
+
+        async with app.run_test(size=(150, 42)) as pilot:
+            await pilot.pause(0.2)
+            # Test Space Sweep tab
+            await switch_tab("tab-sweep", "#btn-scan-sweep")
+            await pilot.click("#btn-scan-sweep")
+            for _ in range(25):
+                await pilot.pause(0.05)
+                if app.query_one("#sweep-list", SelectionList).option_count > 0:
+                    break
+            assert app.query_one("#sweep-list", SelectionList).option_count >= 1
+
+            # Test Startup Services tab & Reveal in Finder ('o')
+            await switch_tab("tab-startup", "#btn-scan-startup")
+            await pilot.click("#btn-scan-startup")
+            for _ in range(25):
+                await pilot.pause(0.05)
+                if app.query_one("#startup-list", SelectionList).option_count > 0:
+                    break
+            startup_list = app.query_one("#startup-list", SelectionList)
+            assert startup_list.option_count == 1
+            startup_list.focus()
+            await pilot.pause(0.05)
+            await pilot.press("o")
+            await pilot.pause(0.05)
+            assert any(p.name == "com.demo.agent.plist" for p in revealed_paths)
+
+            # Test Disk Lens tab
+            await switch_tab("tab-lens", "#btn-run-lens")
+            await pilot.click("#btn-run-lens")
+            for _ in range(25):
+                await pilot.pause(0.05)
+                if app.query_one("#lens-list", SelectionList).option_count > 0:
+                    break
+            assert app.query_one("#lens-list", SelectionList).option_count >= 2
+
+    asyncio.run(scenario())

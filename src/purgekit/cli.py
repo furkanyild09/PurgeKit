@@ -4,8 +4,9 @@ import json
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 import typer
 from rich import box
@@ -22,8 +23,16 @@ from purgekit.models import AppInfo, RiskLevel, ScanMode
 from purgekit.packages import find_matching_pkg_ids, inspect_pkg_receipt
 from purgekit.safety import check_full_disk_access
 from purgekit.scanner import scan_app_leftovers, scan_orphans
+from purgekit.startup import scan_startup_items, unload_startup_items
+from purgekit.sweeper import scan_space_lens, scan_sweep_targets
 from purgekit.uninstaller import default_history_dir, execute_path_removal, execute_removal, load_history
 from purgekit.utils import format_bytes
+from purgekit.watcher import (
+    default_trash_dir,
+    find_newly_trashed_apps,
+    list_trashed_apps,
+    scan_trashed_app_leftovers,
+)
 
 REPO_GIT_URL = "git+https://github.com/furkanyild09/PurgeKit.git"
 
@@ -438,6 +447,57 @@ def orphans(
     console.print(f"Total orphan footprint: [bold]{format_bytes(total)}[/bold]")
 
 
+def _prompt_select_paths(paths: Sequence[Path], prompt_label: str) -> List[Path]:
+    raw = Prompt.ask(prompt_label, default="").strip()
+    if not raw:
+        return []
+    if raw.lower() == "all":
+        return list(paths)
+    selected: List[Path] = []
+    for token in raw.split(","):
+        token = token.strip()
+        if token.isdigit():
+            idx = int(token)
+            if 1 <= idx <= len(paths):
+                selected.append(paths[idx - 1])
+    return selected
+
+
+def _interactive_trash_paths(
+    candidate_paths: Sequence[Path],
+    label: str,
+    dry_run: bool,
+    admin: bool,
+    prompt_label: str = "Enter item numbers to move to Trash (e.g. 1,3 or 'all', Enter to cancel)",
+) -> None:
+    selected_paths = _prompt_select_paths(candidate_paths, prompt_label)
+    if not selected_paths:
+        console.print("[yellow]No items selected.[/yellow]")
+        return
+
+    if dry_run:
+        outcome = execute_path_removal(selected_paths, label=label, dry_run=True, allow_admin=admin)
+        console.print(
+            Panel(
+                f"[cyan]DRY-RUN:[/cyan] {len(outcome.trashed)} item(s) would be moved to Trash ({format_bytes(outcome.reclaimed_bytes)}).",
+                expand=False,
+            )
+        )
+        return
+
+    if not Confirm.ask(f"Move {len(selected_paths)} selected item(s) to Trash?", default=False):
+        console.print("[yellow]Operation cancelled.[/yellow]")
+        return
+
+    outcome = execute_path_removal(selected_paths, label=label, dry_run=False, allow_admin=admin)
+    console.print(
+        f"[green]Completed:[/green] {len(outcome.trashed)} item(s) moved to Trash ({format_bytes(outcome.reclaimed_bytes)})."
+    )
+    if outcome.failed:
+        for p, err in outcome.failed:
+            console.print(f"  [red]- {p}:[/red] {err}")
+
+
 @app.command()
 def find(
     query: str = typer.Argument(..., help="File or folder name to search for."),
@@ -480,48 +540,8 @@ def find(
     console.print(table)
     console.print(f"Total matched size: [bold]{format_bytes(total)}[/bold]")
 
-    if not trash:
-        return
-
-    raw = Prompt.ask("Enter item numbers to move to Trash (e.g. 1,3 or 'all', Enter to cancel)", default="").strip()
-    if not raw:
-        return
-    if raw.lower() == "all":
-        selected_paths = [i.path for i in items]
-    else:
-        selected_paths = []
-        for token in raw.split(","):
-            token = token.strip()
-            if token.isdigit():
-                idx = int(token)
-                if 1 <= idx <= len(items):
-                    selected_paths.append(items[idx - 1].path)
-
-    if not selected_paths:
-        console.print("[yellow]No valid items selected.[/yellow]")
-        return
-
-    if dry_run:
-        outcome = execute_path_removal(selected_paths, label="FileCleanup", dry_run=True, allow_admin=admin)
-        console.print(
-            Panel(
-                f"[cyan]DRY-RUN:[/cyan] {len(outcome.trashed)} item(s) would be moved to Trash ({format_bytes(outcome.reclaimed_bytes)}).",
-                expand=False,
-            )
-        )
-        return
-
-    if not Confirm.ask(f"Move {len(selected_paths)} selected item(s) to Trash?", default=False):
-        console.print("[yellow]Operation cancelled.[/yellow]")
-        return
-
-    outcome = execute_path_removal(selected_paths, label="FileCleanup", dry_run=False, allow_admin=admin)
-    console.print(
-        f"[green]Completed:[/green] {len(outcome.trashed)} item(s) moved to Trash ({format_bytes(outcome.reclaimed_bytes)})."
-    )
-    if outcome.failed:
-        for p, err in outcome.failed:
-            console.print(f"  [red]- {p}:[/red] {err}")
+    if trash:
+        _interactive_trash_paths([i.path for i in items], label="FileCleanup", dry_run=dry_run, admin=admin)
 
 
 @app.command()
@@ -666,6 +686,184 @@ def history(
             format_bytes(int(rec.get("reclaimed_bytes", 0))),
         )
     console.print(table)
+
+
+@app.command()
+def sweep(
+    min_mb: int = typer.Option(50, "--min-mb", help="Minimum size in MB for large user files & project caches."),
+    limit: int = typer.Option(80, "--limit", "-n", help="Maximum number of results."),
+    trash: bool = typer.Option(False, "--trash", help="Interactively move selected sweep targets to Trash."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview removal without deleting when used with --trash."),
+    admin: bool = typer.Option(False, "--admin", help="Allow admin prompt if needed."),
+) -> None:
+    """Scan installers (.dmg/.pkg), dev caches (Xcode/Homebrew/npm/pip), and large files."""
+    with console.status(f"Scanning space sweep targets (>= {min_mb} MB)..."):
+        items = scan_sweep_targets(min_mb=min_mb, limit=limit)
+
+    if not items:
+        console.print("[green]No installers, heavy dev caches, or large files matched.[/green]")
+        return
+
+    table = Table(title=f"Space Sweep Candidates ({len(items)})", box=box.ROUNDED)
+    table.add_column("#", justify="right", style="cyan")
+    table.add_column("Category")
+    table.add_column("Risk")
+    table.add_column("Size", justify="right")
+    table.add_column("Path")
+    table.add_column("Details", style="dim")
+
+    total = 0
+    for idx, item in enumerate(items, start=1):
+        total += item.size_bytes
+        style = RISK_STYLE[item.risk]
+        table.add_row(
+            str(idx),
+            item.category,
+            f"[{style}]{item.risk.value}[/{style}]",
+            format_bytes(item.size_bytes),
+            str(item.path),
+            item.note,
+        )
+    console.print(table)
+    console.print(f"Total reclaimable sweep size: [bold]{format_bytes(total)}[/bold]")
+
+    if trash:
+        _interactive_trash_paths([i.path for i in items], label="SpaceSweep", dry_run=dry_run, admin=admin)
+
+
+@app.command()
+def startup(
+    include_apple: bool = typer.Option(False, "--apple", help="Also include com.apple.* LaunchAgents/Daemons."),
+    unload: bool = typer.Option(False, "--unload", help="Interactively unload selected running startup agents."),
+    trash: bool = typer.Option(False, "--trash", help="Interactively move selected startup plists to Trash."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions without modifying services or files."),
+    admin: bool = typer.Option(False, "--admin", help="Prompt for admin privileges when trashing /Library plists."),
+) -> None:
+    """List, unload, or remove macOS LaunchAgents and LaunchDaemons."""
+    with console.status("Scanning macOS LaunchAgents & LaunchDaemons..."):
+        items = scan_startup_items(include_apple=include_apple)
+
+    if not items:
+        console.print("[green]No third-party startup services found.[/green]")
+        return
+
+    table = Table(title=f"Startup & Background Services ({len(items)})", box=box.ROUNDED)
+    table.add_column("#", justify="right", style="cyan")
+    table.add_column("State")
+    table.add_column("Scope")
+    table.add_column("Risk")
+    table.add_column("Label", style="bold")
+    table.add_column("Path", style="dim")
+
+    for idx, item in enumerate(items, start=1):
+        style = RISK_STYLE[item.risk]
+        state = "[green]Running[/green]" if item.is_running else "[dim]Loaded/Idle[/dim]"
+        table.add_row(
+            str(idx),
+            state,
+            item.scope,
+            f"[{style}]{item.risk.value}[/{style}]",
+            item.label,
+            str(item.path),
+        )
+    console.print(table)
+
+    paths = [i.path for i in items]
+    if unload:
+        chosen = _prompt_select_paths(paths, "Enter service numbers to unload via launchctl (e.g. 1,2, Enter to cancel)")
+        if chosen:
+            outcomes = unload_startup_items(chosen, dry_run=dry_run)
+            for p, (ok, msg) in outcomes.items():
+                tag = "[green]OK[/green]" if ok else "[red]FAILED[/red]"
+                console.print(f"  {tag} {p.name}: {msg}")
+
+    if trash:
+        _interactive_trash_paths(paths, label="StartupCleanup", dry_run=dry_run, admin=admin)
+
+
+@app.command()
+def lens(
+    target: Optional[Path] = typer.Argument(None, help="Directory to inspect (defaults to your home folder ~)."),
+    limit: int = typer.Option(25, "--limit", "-n", help="Number of top entries to show."),
+) -> None:
+    """Disk Space Lens: inspect top disk usage inside a folder with visual bars."""
+    with console.status("Measuring directory sizes..."):
+        root, total, entries = scan_space_lens(target_dir=target, limit=limit)
+
+    if not entries:
+        console.print(f"[yellow]No readable entries found under {root}.[/yellow]")
+        return
+
+    table = Table(title=f"Disk Space Lens — {root}", box=box.ROUNDED)
+    table.add_column("#", justify="right", style="cyan")
+    table.add_column("Name", style="bold")
+    table.add_column("Size", justify="right")
+    table.add_column("Share", justify="right")
+    table.add_column("Usage")
+    table.add_column("Flag", style="dim")
+
+    for idx, entry in enumerate(entries, start=1):
+        blocks = max(1, int(round((entry.share_pct / 100.0) * 16))) if entry.size_bytes > 0 else 0
+        bar = "█" * blocks + "░" * (16 - blocks)
+        kind = f"{entry.name}/" if entry.is_dir else entry.name
+        flag = "Protected root" if entry.is_protected else ("Folder" if entry.is_dir else "File")
+        table.add_row(
+            str(idx),
+            kind,
+            format_bytes(entry.size_bytes),
+            f"{entry.share_pct:5.1f}%",
+            f"[cyan]{bar}[/cyan]",
+            flag,
+        )
+    console.print(table)
+    console.print(f"Measured total in {root}: [bold]{format_bytes(total)}[/bold]")
+
+
+@app.command()
+def watch(
+    mode: ScanMode = typer.Option(ScanMode.MODERATE, "--mode", "-m", help="Leftover scan mode: safe | moderate | advanced"),
+    interval: float = typer.Option(2.0, "--interval", help="Polling interval in seconds."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Automatically trash detected leftovers without prompting."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Simulate leftover cleanup without modifying files."),
+    once: bool = typer.Option(False, "--once", help="Check Trash once for unexamined apps and exit."),
+) -> None:
+    """Watch ~/.Trash for newly trashed `.app` bundles and offer leftover cleanup."""
+    trash_dir = default_trash_dir()
+    seen = {str(p.resolve()) for p in list_trashed_apps(trash_dir)} if not once else set()
+    console.print(
+        f"[cyan]PurgeKit Trash Watcher active[/cyan] on [bold]{trash_dir}[/bold] "
+        f"(already in Trash: {len(seen)} app(s)). Press Ctrl+C to stop."
+    )
+
+    try:
+        while True:
+            new_apps = find_newly_trashed_apps(trash_dir, seen)
+            for app_path in new_apps:
+                console.print(f"\n[yellow]Detected newly trashed app:[/yellow] [bold]{app_path.name}[/bold]")
+                scan_res = scan_trashed_app_leftovers(app_path, mode=mode)
+                if not scan_res or not scan_res.leftovers:
+                    console.print("[dim]No leftover Library items found for this app.[/dim]")
+                    continue
+                _render_scan_result(scan_res)
+                selected = [item.path for item in scan_res.leftovers if item.selected_by_default and not item.requires_admin]
+                if not selected:
+                    continue
+                if dry_run:
+                    outcome = execute_removal(scan_res, selected_paths=selected, include_app=False, dry_run=True)
+                    console.print(
+                        f"[cyan]DRY-RUN:[/cyan] Would trash {len(outcome.trashed)} leftover(s) ({format_bytes(outcome.reclaimed_bytes)})."
+                    )
+                    continue
+                if yes or Confirm.ask(f"Move {len(selected)} leftover item(s) to Trash?", default=True):
+                    outcome = execute_removal(scan_res, selected_paths=selected, include_app=False, dry_run=False)
+                    console.print(
+                        f"[green]Cleaned:[/green] {len(outcome.trashed)} leftover(s) moved to Trash ({format_bytes(outcome.reclaimed_bytes)})."
+                    )
+            if once:
+                break
+            time.sleep(max(0.5, interval))
+    except KeyboardInterrupt:
+        console.print("\n[dim]Trash Watcher stopped.[/dim]")
 
 
 @app.command()

@@ -115,6 +115,41 @@ class FileSearchItem:
     requires_admin: bool = False
 
 
+@dataclass(frozen=True)
+class SweepItem:
+    path: Path
+    category: str
+    size_bytes: int
+    risk: RiskLevel
+    note: str
+    is_dir: bool = False
+    requires_admin: bool = False
+
+
+@dataclass(frozen=True)
+class StartupItem:
+    path: Path
+    label: str
+    scope: str
+    executable: Optional[str]
+    size_bytes: int
+    risk: RiskLevel
+    is_running: bool = False
+    run_at_load: bool = False
+    keep_alive: bool = False
+    requires_admin: bool = False
+
+
+@dataclass(frozen=True)
+class SpaceLensEntry:
+    path: Path
+    name: str
+    size_bytes: int
+    share_pct: float
+    is_dir: bool
+    is_protected: bool = False
+
+
 @dataclass
 class RemovalOutcome:
     app_name: str

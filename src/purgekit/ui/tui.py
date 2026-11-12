@@ -38,8 +38,14 @@ from purgekit.models import (
     RiskLevel,
     ScanMode,
     ScanResult,
+    SpaceLensEntry,
+    StartupItem,
+    SweepItem,
 )
+from purgekit.safety import requires_admin_privileges
 from purgekit.scanner import scan_app_leftovers, scan_orphans
+from purgekit.startup import scan_startup_items, unload_startup_items
+from purgekit.sweeper import scan_space_lens, scan_sweep_targets
 from purgekit.uninstaller import execute_path_removal, execute_removal
 from purgekit.utils import format_bytes
 
@@ -58,6 +64,11 @@ THEME_CHOICES: Tuple[Tuple[str, str], ...] = (
     ("textual-light", "Light"),
 )
 THEME_LABELS: Dict[str, str] = dict(THEME_CHOICES)
+
+
+def _reveal_path_in_finder(path: Path) -> None:
+    """Reveal a file or directory in macOS Finder (`open -R`)."""
+    subprocess.Popen(["open", "-R", str(path)])
 
 
 def _short_path(path: Path, home: Optional[Path] = None) -> str:
@@ -266,33 +277,35 @@ class PurgeKitApp(App[None]):
         border-left: tall $accent;
         margin-bottom: 1;
     }
-    #leftovers-list, #orphans-list, #files-list {
+    #leftovers-list, #orphans-list, #files-list, #sweep-list, #startup-list, #lens-list {
         height: 1fr;
         border: round $primary-darken-2;
         border-title-color: $text;
         border-subtitle-color: $text-muted;
     }
-    #action-bar, #orphans-action-bar, #files-action-bar, #file-search-bar {
+    #action-bar, #orphans-action-bar, #files-action-bar, #file-search-bar,
+    #sweep-bar, #sweep-action-bar, #startup-action-bar, #lens-nav-bar, #lens-action-bar {
         height: 3;
         margin-top: 1;
         align: left middle;
     }
-    #file-search-bar {
+    #file-search-bar, #sweep-bar, #lens-nav-bar {
         margin-top: 0;
         margin-bottom: 1;
     }
-    #file-search-input {
+    #file-search-input, #lens-path-input {
         width: 1fr;
         margin-right: 1;
     }
-    #action-bar Button, #orphans-action-bar Button, #files-action-bar Button, #file-search-bar Button {
+    #action-bar Button, #orphans-action-bar Button, #files-action-bar Button, #file-search-bar Button,
+    #sweep-bar Button, #sweep-action-bar Button, #startup-action-bar Button, #lens-nav-bar Button, #lens-action-bar Button {
         margin-right: 1;
     }
-    #orphans-container, #files-container {
+    #orphans-container, #files-container, #sweep-container, #startup-container, #lens-container {
         padding: 0 1;
         height: 1fr;
     }
-    #orphans-summary, #files-summary {
+    #orphans-summary, #files-summary, #sweep-summary, #startup-summary, #lens-summary {
         height: auto;
         padding: 1;
         background: $panel;
@@ -311,6 +324,7 @@ class PurgeKitApp(App[None]):
         Binding("q", "quit", "Quit"),
         Binding("t", "cycle_theme", "Theme"),
         Binding("f", "open_file_search", "Find Files"),
+        Binding("o", "reveal_in_finder", "Finder"),
         Binding("m", "cycle_mode", "Mode"),
         Binding("s", "toggle_sort", "Sort"),
         Binding("r", "refresh_all", "Refresh"),
@@ -342,6 +356,8 @@ class PurgeKitApp(App[None]):
         self._sort_by = "name"  # "name" | "size"
         self._file_scope = "user"  # "user" | "library" | "all"
         self._file_type = "all"  # "all" | "file" | "dir"
+        self._sweep_min_mb = 50
+        self._lens_dir: Path = (home or Path.home()).resolve()
         self._theme_name = self._load_saved_theme()
         self.theme = self._theme_name
         self._all_apps: List[AppInfo] = []
@@ -351,6 +367,9 @@ class PurgeKitApp(App[None]):
         self._current_scan: Optional[ScanResult] = None
         self._orphans: List[OrphanItem] = []
         self._file_results: List[FileSearchItem] = []
+        self._sweep_items: List[SweepItem] = []
+        self._startup_items: List[StartupItem] = []
+        self._lens_entries: List[SpaceLensEntry] = []
         self._scan_seq = 0
         self._file_search_seq = 0
 
@@ -406,6 +425,7 @@ class PurgeKitApp(App[None]):
                         yield SelectionList(id="leftovers-list")
                         with Horizontal(id="action-bar"):
                             yield Button("Select All / None", id="btn-toggle-all")
+                            yield Button("Reveal in Finder", id="btn-reveal-leftover")
                             yield Button("Dry-Run", id="btn-dry-run")
                             yield Button("Uninstall to Trash", id="btn-uninstall", variant="error")
             with TabPane("File Search", id="tab-files"):
@@ -425,14 +445,61 @@ class PurgeKitApp(App[None]):
                     yield SelectionList(id="files-list")
                     with Horizontal(id="files-action-bar"):
                         yield Button("Select All / None", id="btn-files-toggle-all")
+                        yield Button("Reveal in Finder", id="btn-files-reveal")
                         yield Button("Dry-Run", id="btn-files-dry-run")
                         yield Button("Move Selected to Trash", id="btn-files-clean", variant="error")
-            with TabPane("Orphaned Leftovers", id="tab-orphans"):
+            with TabPane("Space Sweep", id="tab-sweep"):
+                with Vertical(id="sweep-container"):
+                    with Horizontal(id="sweep-bar"):
+                        yield Button("Scan Space Sweep", id="btn-scan-sweep", variant="primary")
+                        yield Button(f"Min Size: {self._sweep_min_mb} MB", id="btn-sweep-min")
+                    yield Static(
+                        "Click 'Scan Space Sweep' to find old .dmg/.pkg installers, Xcode/Homebrew/npm/pip caches, and large files.",
+                        id="sweep-summary",
+                    )
+                    yield SelectionList(id="sweep-list")
+                    with Horizontal(id="sweep-action-bar"):
+                        yield Button("Select All / None", id="btn-sweep-toggle-all")
+                        yield Button("Reveal in Finder", id="btn-sweep-reveal")
+                        yield Button("Dry-Run", id="btn-sweep-dry-run")
+                        yield Button("Trash Selected Items", id="btn-sweep-clean", variant="error")
+            with TabPane("Startup Services", id="tab-startup"):
+                with Vertical(id="startup-container"):
+                    yield Static(
+                        "Click 'Scan Services' to inspect third-party LaunchAgents & LaunchDaemons.",
+                        id="startup-summary",
+                    )
+                    yield SelectionList(id="startup-list")
+                    with Horizontal(id="startup-action-bar"):
+                        yield Button("Scan Services", id="btn-scan-startup", variant="primary")
+                        yield Button("Select All / None", id="btn-startup-toggle-all")
+                        yield Button("Unload Selected", id="btn-startup-unload", variant="warning")
+                        yield Button("Reveal in Finder", id="btn-startup-reveal")
+                        yield Button("Dry-Run", id="btn-startup-dry-run")
+                        yield Button("Trash Selected Plists", id="btn-startup-clean", variant="error")
+            with TabPane("Disk Lens", id="tab-lens"):
+                with Vertical(id="lens-container"):
+                    with Horizontal(id="lens-nav-bar"):
+                        yield Input(value=_short_path(self._lens_dir, home=self._home), id="lens-path-input")
+                        yield Button("Inspect", id="btn-run-lens", variant="primary")
+                        yield Button("Up", id="btn-lens-up")
+                        yield Button("Drill Selected", id="btn-lens-drill")
+                    yield Static(
+                        "Inspect disk footprint inside any directory and drill down into heavy folders.",
+                        id="lens-summary",
+                    )
+                    yield SelectionList(id="lens-list")
+                    with Horizontal(id="lens-action-bar"):
+                        yield Button("Reveal in Finder", id="btn-lens-reveal")
+                        yield Button("Dry-Run", id="btn-lens-dry-run")
+                        yield Button("Trash Selected", id="btn-lens-clean", variant="error")
+            with TabPane("Orphans", id="tab-orphans"):
                 with Vertical(id="orphans-container"):
                     yield Static("Click 'Scan Orphans' to detect orphaned leftovers from removed apps.", id="orphans-summary")
                     yield SelectionList(id="orphans-list")
                     with Horizontal(id="orphans-action-bar"):
                         yield Button("Scan Orphans", id="btn-scan-orphans", variant="primary")
+                        yield Button("Reveal in Finder", id="btn-orphans-reveal")
                         yield Button("Dry-Run", id="btn-orphans-dry-run")
                         yield Button("Trash Selected Orphans", id="btn-orphans-clean", variant="error")
 
@@ -459,6 +526,18 @@ class PurgeKitApp(App[None]):
         orphans_list = self.query_one("#orphans-list", SelectionList)
         orphans_list.border_title = "Orphaned Library Items"
         orphans_list.border_subtitle = "Space: Toggle"
+
+        sweep_list = self.query_one("#sweep-list", SelectionList)
+        sweep_list.border_title = "Installers, Dev Caches & Large Files"
+        sweep_list.border_subtitle = "Space: Toggle"
+
+        startup_list = self.query_one("#startup-list", SelectionList)
+        startup_list.border_title = "LaunchAgents & LaunchDaemons"
+        startup_list.border_subtitle = "Space: Toggle"
+
+        lens_list = self.query_one("#lens-list", SelectionList)
+        lens_list.border_title = "Folder Footprint Breakdown"
+        lens_list.border_subtitle = "Space: Toggle  •  o: Reveal"
 
         table = self.query_one("#apps-table", DataTable)
         table.add_columns("Application", "Version", "Source", "Size")
@@ -553,6 +632,8 @@ class PurgeKitApp(App[None]):
             self.action_open_file_search()
         elif event.input.id == "file-search-input":
             self._start_file_search(event.value)
+        elif event.input.id == "lens-path-input":
+            self._start_lens_scan(event.value)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         if event.data_table.id != "apps-table" or event.row_key.value is None:
@@ -812,12 +893,191 @@ class PurgeKitApp(App[None]):
         if self._current_app:
             self._start_app_scan(self._current_app)
 
+    @work(thread=True)
+    def _scan_sweep_worker(self) -> None:
+        self.call_from_thread(
+            self._set_status,
+            f"[yellow]⟳[/yellow] Scanning installers, dev caches, and large files (>= {self._sweep_min_mb} MB)...",
+        )
+        items = scan_sweep_targets(min_mb=self._sweep_min_mb, home=self._home)
+        self.call_from_thread(self._on_sweep_loaded, items)
+
+    def _on_sweep_loaded(self, items: List[SweepItem]) -> None:
+        self._sweep_items = items
+        total = sum(i.size_bytes for i in items)
+        self.query_one("#sweep-summary", Static).update(
+            f"Sweep targets found: [bold]{len(items)}[/bold]  •  "
+            f"Threshold: [cyan]{self._sweep_min_mb} MB[/cyan]  •  "
+            f"Reclaimable: [bold yellow]{format_bytes(total)}[/bold yellow]"
+        )
+        sel_list = self.query_one("#sweep-list", SelectionList)
+        sel_list.clear_options()
+        sel_list.border_title = f"Installers, Dev Caches & Large Files ({len(items)})"
+        options: List[Selection[str]] = []
+        for item in items:
+            badge = RISK_BADGE[item.risk]
+            kind_icon = "📁" if item.is_dir else "📄"
+            short_p = _short_path(item.path, home=self._home)
+            label = (
+                f"{badge}  {kind_icon}  [bold]{format_bytes(item.size_bytes):>8}[/bold]  "
+                f"[cyan]{item.category}[/cyan]  {short_p}  [dim]({item.note})[/dim]"
+            )
+            options.append(Selection(label, str(item.path), initial_state=False))
+        sel_list.add_options(options)
+        self._set_status(f"[green]●[/green] Space Sweep found {len(items)} item(s) ({format_bytes(total)}).")
+
+    def _cycle_sweep_min(self) -> None:
+        order = (50, 250, 1024)
+        idx = (order.index(self._sweep_min_mb) + 1) % len(order) if self._sweep_min_mb in order else 0
+        self._sweep_min_mb = order[idx]
+        lbl = "1 GB" if self._sweep_min_mb == 1024 else f"{self._sweep_min_mb} MB"
+        self.query_one("#btn-sweep-min", Button).label = f"Min Size: {lbl}"
+        if self._sweep_items:
+            self._scan_sweep_worker()
+
+    @work(thread=True)
+    def _scan_startup_worker(self) -> None:
+        self.call_from_thread(self._set_status, "[yellow]⟳[/yellow] Scanning LaunchAgents & LaunchDaemons...")
+        items = scan_startup_items(home=self._home, system_root=self._system_root)
+        self.call_from_thread(self._on_startup_loaded, items)
+
+    def _on_startup_loaded(self, items: List[StartupItem]) -> None:
+        self._startup_items = items
+        running_count = sum(1 for i in items if i.is_running)
+        self.query_one("#startup-summary", Static).update(
+            f"Startup services found: [bold]{len(items)}[/bold]  •  "
+            f"Active in launchctl: [bold green]{running_count}[/bold green]"
+        )
+        sel_list = self.query_one("#startup-list", SelectionList)
+        sel_list.clear_options()
+        sel_list.border_title = f"LaunchAgents & LaunchDaemons ({len(items)})"
+        options: List[Selection[str]] = []
+        for item in items:
+            badge = RISK_BADGE[item.risk]
+            state_tag = "[green][RUNNING][/green]" if item.is_running else "[dim][IDLE][/dim]"
+            short_p = _short_path(item.path, home=self._home)
+            label = f"{badge}  {state_tag}  [cyan]{item.scope}[/cyan]  [bold]{item.label}[/bold]  [dim]{short_p}[/dim]"
+            options.append(Selection(label, str(item.path), initial_state=False))
+        sel_list.add_options(options)
+        self._set_status(f"[green]●[/green] Found {len(items)} startup service(s).")
+
+    def _unload_selected_startup(self) -> None:
+        paths = self._selected_paths_for("#startup-list")
+        if not paths:
+            self._set_status("Select at least one startup service first.")
+            return
+        outcomes = unload_startup_items(paths, home=self._home, dry_run=False)
+        ok_count = sum(1 for ok, _ in outcomes.values() if ok)
+        fail_msgs = [msg for ok, msg in outcomes.values() if not ok]
+        if fail_msgs:
+            self._set_status(f"[yellow]Unloaded {ok_count}/{len(paths)}:[/yellow] {fail_msgs[0]}")
+        else:
+            self._set_status(f"[green]✓ Unloaded {ok_count} service(s) via launchctl.[/green]")
+        self._scan_startup_worker()
+
+    def _resolve_lens_input(self, raw_path: str) -> Path:
+        text = raw_path.strip() or "~"
+        base_home = (self._home or Path.home()).resolve()
+        if text == "~":
+            return base_home
+        if text.startswith("~/"):
+            return (base_home / text[2:]).resolve()
+        return Path(text).expanduser().resolve()
+
+    def _start_lens_scan(self, raw_path: Optional[str] = None) -> None:
+        if raw_path is not None:
+            self._lens_dir = self._resolve_lens_input(raw_path)
+        self.query_one("#lens-path-input", Input).value = _short_path(self._lens_dir, home=self._home)
+        self._scan_lens_worker(self._lens_dir)
+
+    @work(thread=True)
+    def _scan_lens_worker(self, target_dir: Path) -> None:
+        self.call_from_thread(self._set_status, f"[yellow]⟳[/yellow] Measuring disk footprint under {target_dir}...")
+        root, total, entries = scan_space_lens(target_dir=target_dir, home=self._home)
+        self.call_from_thread(self._on_lens_loaded, root, total, entries)
+
+    def _on_lens_loaded(self, root: Path, total: int, entries: List[SpaceLensEntry]) -> None:
+        self._lens_dir = root
+        self._lens_entries = entries
+        self.query_one("#lens-summary", Static).update(
+            f"Directory: [bold cyan]{_short_path(root, home=self._home)}[/bold cyan]  •  "
+            f"Entries: [bold]{len(entries)}[/bold]  •  "
+            f"Total Measured: [bold green]{format_bytes(total)}[/bold green]"
+        )
+        sel_list = self.query_one("#lens-list", SelectionList)
+        sel_list.clear_options()
+        sel_list.border_title = f"Disk Lens — {_short_path(root, home=self._home)}"
+        options: List[Selection[str]] = []
+        for entry in entries:
+            blocks = max(1, int(round((entry.share_pct / 100.0) * 14))) if entry.size_bytes > 0 else 0
+            bar = "█" * blocks + "░" * (14 - blocks)
+            icon = "📁" if entry.is_dir else "📄"
+            prot = " [red][PROTECTED][/red]" if entry.is_protected else ""
+            label = (
+                f"[cyan]{bar}[/cyan]  {entry.share_pct:5.1f}%  [bold]{format_bytes(entry.size_bytes):>8}[/bold]  "
+                f"{icon} {entry.name}{'/' if entry.is_dir else ''}{prot}"
+            )
+            options.append(Selection(label, str(entry.path), initial_state=False))
+        sel_list.add_options(options)
+        self._set_status(f"[green]●[/green] Disk Lens measured {format_bytes(total)} in {_short_path(root, home=self._home)}.")
+
+    def _lens_drill_selected(self) -> None:
+        target = self._highlighted_path_for("#lens-list")
+        if target and target.is_dir():
+            self._start_lens_scan(str(target))
+        else:
+            self._set_status("Highlight a folder in Disk Lens to drill into it.")
+
+    def _lens_go_up(self) -> None:
+        parent = self._lens_dir.parent
+        self._start_lens_scan(str(parent))
+
+    def _highlighted_path_for(self, list_id: str) -> Optional[Path]:
+        sel_list = self.query_one(list_id, SelectionList)
+        idx = sel_list.highlighted
+        if idx is not None and 0 <= idx < sel_list.option_count:
+            return Path(str(sel_list.get_option_at_index(idx).value))
+        if sel_list.selected:
+            return Path(str(sel_list.selected[0]))
+        if sel_list.option_count > 0:
+            return Path(str(sel_list.get_option_at_index(0).value))
+        return None
+
+    def action_reveal_in_finder(self) -> None:
+        list_map = {
+            "tab-apps": "#leftovers-list",
+            "tab-files": "#files-list",
+            "tab-sweep": "#sweep-list",
+            "tab-startup": "#startup-list",
+            "tab-lens": "#lens-list",
+            "tab-orphans": "#orphans-list",
+        }
+        active = self._active_tab_id()
+        list_id = list_map.get(active)
+        target = self._highlighted_path_for(list_id) if list_id else None
+        if target is None and active == "tab-apps" and self._current_app:
+            target = self._current_app.path
+        if target is None or not target.exists():
+            self._set_status("No existing file or folder highlighted to reveal in Finder.")
+            return
+        try:
+            _reveal_path_in_finder(target)
+            self._set_status(f"[green]●[/green] Revealed in Finder: {_short_path(target, home=self._home)}")
+        except OSError as exc:
+            self._set_status(f"[red]Finder error:[/red] {exc}")
+
     def action_refresh_all(self) -> None:
         active = self._active_tab_id()
         if active == "tab-orphans":
             self._scan_orphans_worker()
         elif active == "tab-files":
             self._start_file_search(self.query_one("#file-search-input", Input).value)
+        elif active == "tab-sweep":
+            self._scan_sweep_worker()
+        elif active == "tab-startup":
+            self._scan_startup_worker()
+        elif active == "tab-lens":
+            self._start_lens_scan(self.query_one("#lens-path-input", Input).value)
         else:
             self._load_apps_worker()
 
@@ -825,6 +1085,9 @@ class PurgeKitApp(App[None]):
         list_map = {
             "tab-apps": "#leftovers-list",
             "tab-files": "#files-list",
+            "tab-sweep": "#sweep-list",
+            "tab-startup": "#startup-list",
+            "tab-lens": "#lens-list",
             "tab-orphans": "#orphans-list",
         }
         sel_list = self.query_one(list_map.get(self._active_tab_id(), "#leftovers-list"), SelectionList)
@@ -837,12 +1100,18 @@ class PurgeKitApp(App[None]):
         sel_list = self.query_one(list_id, SelectionList)
         return [Path(val) for val in sel_list.selected]
 
+    _PATH_TAB_CONFIG: Dict[str, Tuple[str, str, str, str]] = {
+        "tab-orphans": ("#orphans-list", "OrphanCleanup", "Orphans", "Trash Orphaned Leftovers"),
+        "tab-files": ("#files-list", "FileCleanup", "Files", "Move Selected Files to Trash"),
+        "tab-sweep": ("#sweep-list", "SpaceSweep", "Space Sweep", "Trash Selected Sweep Items"),
+        "tab-startup": ("#startup-list", "StartupCleanup", "Startup", "Trash Selected Startup Plists"),
+        "tab-lens": ("#lens-list", "DiskLensCleanup", "Disk Lens", "Trash Selected Items"),
+    }
+
     def action_dry_run_preview(self) -> None:
         active = self._active_tab_id()
-        if active in ("tab-orphans", "tab-files"):
-            list_id = "#orphans-list" if active == "tab-orphans" else "#files-list"
-            label = "OrphanCleanup" if active == "tab-orphans" else "FileCleanup"
-            tag = "Orphans" if active == "tab-orphans" else "Files"
+        if active in self._PATH_TAB_CONFIG:
+            list_id, label, tag, _ = self._PATH_TAB_CONFIG[active]
             paths = self._selected_paths_for(list_id)
             outcome = execute_path_removal(paths, label=label, dry_run=True, home=self._home)
             self._set_status(
@@ -876,11 +1145,7 @@ class PurgeKitApp(App[None]):
             self._set_status("Select at least one item first.")
             return
         dry = execute_path_removal(paths, label=label, dry_run=True, home=self._home)
-        admin_items = [
-            item
-            for item in self._file_results
-            if item.path in set(paths) and item.requires_admin
-        ]
+        admin_items = [p for p in dry.trashed if requires_admin_privileges(p, home=self._home)]
         admin_note = (
             f"\n• Administrator privileges will be requested for {len(admin_items)} system path(s)."
             if admin_items
@@ -916,21 +1181,20 @@ class PurgeKitApp(App[None]):
 
     def action_request_uninstall(self) -> None:
         active = self._active_tab_id()
-        if active == "tab-orphans":
+        if active in self._PATH_TAB_CONFIG:
+            list_id, label, _, modal_title = self._PATH_TAB_CONFIG[active]
+            refresh_callbacks = {
+                "tab-orphans": self._scan_orphans_worker,
+                "tab-files": lambda: self._start_file_search(self.query_one("#file-search-input", Input).value),
+                "tab-sweep": self._scan_sweep_worker,
+                "tab-startup": self._scan_startup_worker,
+                "tab-lens": lambda: self._start_lens_scan(self.query_one("#lens-path-input", Input).value),
+            }
             self._confirm_and_remove_paths(
-                self._selected_paths_for("#orphans-list"),
-                label="OrphanCleanup",
-                modal_title="Trash Orphaned Leftovers",
-                on_done=self._scan_orphans_worker,
-            )
-            return
-
-        if active == "tab-files":
-            self._confirm_and_remove_paths(
-                self._selected_paths_for("#files-list"),
-                label="FileCleanup",
-                modal_title="Move Selected Files to Trash",
-                on_done=lambda: self._start_file_search(self.query_one("#file-search-input", Input).value),
+                self._selected_paths_for(list_id),
+                label=label,
+                modal_title=modal_title,
+                on_done=refresh_callbacks[active],
             )
             return
 
@@ -1008,14 +1272,37 @@ class PurgeKitApp(App[None]):
             self.action_cycle_mode()
         elif btn_id == "btn-refresh":
             self.action_refresh_all()
-        elif btn_id in ("btn-toggle-all", "btn-files-toggle-all"):
+        elif btn_id in ("btn-toggle-all", "btn-files-toggle-all", "btn-sweep-toggle-all", "btn-startup-toggle-all"):
             self.action_toggle_select_all()
-        elif btn_id in ("btn-dry-run", "btn-orphans-dry-run", "btn-files-dry-run"):
+        elif btn_id in (
+            "btn-reveal-leftover",
+            "btn-files-reveal",
+            "btn-sweep-reveal",
+            "btn-startup-reveal",
+            "btn-lens-reveal",
+            "btn-orphans-reveal",
+        ):
+            self.action_reveal_in_finder()
+        elif btn_id in ("btn-dry-run", "btn-orphans-dry-run", "btn-files-dry-run", "btn-sweep-dry-run", "btn-startup-dry-run", "btn-lens-dry-run"):
             self.action_dry_run_preview()
-        elif btn_id in ("btn-uninstall", "btn-orphans-clean", "btn-files-clean"):
+        elif btn_id in ("btn-uninstall", "btn-orphans-clean", "btn-files-clean", "btn-sweep-clean", "btn-startup-clean", "btn-lens-clean"):
             self.action_request_uninstall()
         elif btn_id == "btn-scan-orphans":
             self._scan_orphans_worker()
+        elif btn_id == "btn-scan-sweep":
+            self._scan_sweep_worker()
+        elif btn_id == "btn-sweep-min":
+            self._cycle_sweep_min()
+        elif btn_id == "btn-scan-startup":
+            self._scan_startup_worker()
+        elif btn_id == "btn-startup-unload":
+            self._unload_selected_startup()
+        elif btn_id == "btn-run-lens":
+            self._start_lens_scan(self.query_one("#lens-path-input", Input).value)
+        elif btn_id == "btn-lens-up":
+            self._lens_go_up()
+        elif btn_id == "btn-lens-drill":
+            self._lens_drill_selected()
 
 
 def run_tui(include_system: bool = False, resize: bool = True) -> None:
