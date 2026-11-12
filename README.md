@@ -1,17 +1,28 @@
 # PurgeKit
 
-macOS için **Revo Uninstaller** yaklaşımından esinlenen akıllı uygulama kaldırıcı ve artık dosya tarayıcı.
+[![CI](https://github.com/furkanyild09/PurgeKit/actions/workflows/ci.yml/badge.svg)](https://github.com/furkanyild09/PurgeKit/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## Özellikler
+A smart application uninstaller and deep leftover scanner for **macOS** (CLI & interactive TUI), inspired by **Revo Uninstaller**.
 
-- **Çift Panelli Textual TUI (`purgekit ui`):** Tema seçimi (`Tokyo Night`, `Dark`, `Nord`, `Catppuccin`, `Dracula`, `Light`), metrik kartları, arama/sıralama, checkbox ile artık seçimi ve otomatik pencere boyutlandırma.
-- **Uygulama Keşfi:** `/Applications`, `~/Applications` (alt klasörler dahil) taraması; `Info.plist`, Mac App Store ve Homebrew Cask (`zap` dahil) tespiti.
-- **3 Kademeli Artık Tarama:** `safe`, `moderate`, `advanced` modları ile `~/Library`, `/Library`, `LaunchAgents`, `LaunchDaemons`, `Group Containers` (`codesign` entitlements üzerinden) ve `.pkg` receipt analizi.
-- **Güvenlik Katmanı:** SIP koruması, kardeş uygulama kontrolü (ortak geliştirici klasörlerini koruma), risk sınıflandırması (`low` / `medium` / `high`) ve Full Disk Access kontrolü.
-- **Güvenli Kaldırma:** Varsayılan olarak Çöp Kutusu'na taşıma, `dry-run` önizleme, çalışan süreç sonlandırma, LaunchAgent/Daemon durdurma, `--admin --forget-pkgs` ve `~/.purgekit/history/` altında JSON işlem kaydı.
-- **Yetim Artık Tarayıcı (`orphans`):** Önceden normal yolla silinmiş uygulamaların `~/Library` içinde bıraktığı artıkları tespit edip temizler.
+## Features
 
-## Kurulum & Çalıştırma
+- **Dual-Pane Textual TUI (`purgekit ui`):** Built-in theme switcher (`Tokyo Night`, `Dark`, `Nord`, `Catppuccin`, `Dracula`, `Light`), disk-usage metric cards, live search/sorting, checkbox selection, and automatic terminal window sizing.
+- **Application Discovery:** Scans `/Applications` and `~/Applications` (including subdirectories), reads `Info.plist` metadata, and detects Mac App Store receipts and Homebrew Cask installations (`zap` stanzas included).
+- **3-Tier Leftover Scanner:** Supports `safe`, `moderate`, and `advanced` modes across `~/Library`, `/Library`, `LaunchAgents`, `LaunchDaemons`, `Group Containers` (via `codesign` entitlements), and `.pkg` receipts.
+- **Safety Guardrails:**
+  - Enforces System Integrity Protection (SIP) and critical `Library` root exclusions.
+  - **Sibling App Check:** Protects shared vendor folders (e.g., `~/Library/Application Support/Google`) when other apps from the same developer remain installed.
+  - Risk classification (`low`, `medium`, `high`) and macOS Full Disk Access (FDA) diagnostics.
+- **Safe Removal & Audit Trail:** Moves items to Trash by default (`send2trash`), supports `--dry-run` previews, terminates running app processes, unloads LaunchAgents/Daemons, supports `--admin --forget-pkgs`, and records JSON manifests under `~/.purgekit/history/`.
+- **Orphan Scanner (`orphans`):** Finds leftover `~/Library` directories and preference files left behind by previously deleted apps.
+
+## Requirements
+
+- macOS
+- Python 3.9+
+
+## Installation
 
 ```bash
 git clone https://github.com/furkanyild09/PurgeKit.git
@@ -21,34 +32,51 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-## Temel Komutlar
+## Usage
+
+### Interactive TUI
 
 ```bash
-purgekit ui                  # Çift panelli etkileşimli Textual TUI
-purgekit doctor              # Full Disk Access, codesign, pkgutil, brew kontrolü
-purgekit list --sort size
-purgekit scan "Spotify" --mode moderate
-purgekit pkg "FortiClient" --files       # .pkg kurulum kayıtlarını incele
-purgekit uninstall "Spotify" --dry-run
-purgekit uninstall "App" --mode advanced --admin --forget-pkgs
-purgekit orphans
-purgekit history --detail 1
+purgekit ui
 ```
 
-### TUI Kısayolları (`purgekit ui`)
+**Keyboard Shortcuts:**
+- `/` — Search apps (`Escape` to return to the table)
+- `t` — Switch theme (persisted in `~/.purgekit/config.json`)
+- `s` — Toggle sort order (`Name ↑` / `Size ↓`)
+- `m` — Cycle scan mode (`safe` / `moderate` / `advanced`)
+- `a` — Select / deselect all leftover items
+- `d` — Run a `dry-run` preview
+- `u` — Move selected app/leftovers or orphans to Trash (with confirmation modal)
+- `r` — Refresh list / rescan
+- `q` — Quit
 
-- `/`: Uygulama ara (`Escape` ile listeye dönüş)
-- `t`: Temayı değiştir (`Tokyo Night`, `Dark`, `Nord`, `Catppuccin`, `Dracula`, `Light` — tercih kaydedilir)
-- `s`: Sıralamayı değiştir (`Ad ↑` / `Boyut ↓`)
-- `m`: Tarama modunu değiştir (`safe` / `moderate` / `advanced`)
-- `a`: Artık dosyaların tümünü seç / seçimi temizle
-- `d`: Dry-run önizleme
-- `u`: Seçili uygulama veya yetim artıkları Çöp Kutusu'na kaldır (onay penceresiyle)
-- `r`: Listeyi / taramayı yenile
-- `q`: Çıkış
+> Note: `purgekit ui` automatically enlarges interactive terminal windows to at least `148×42` on startup. Pass `--no-resize` to keep your current terminal dimensions.
 
-> Not: `purgekit ui` başlatıldığında terminal penceresini otomatik olarak en az `148x42` boyutuna genişletir (devre dışı bırakmak için `--no-resize`).
+### CLI Commands
 
-## Lisans
+```bash
+purgekit doctor                            # Check Full Disk Access, codesign, pkgutil, launchctl, brew
+purgekit list --sort size                  # List installed apps sorted by disk size
+purgekit scan "Spotify" --mode moderate    # Scan leftovers without deleting anything
+purgekit pkg "FortiClient" --files         # Inspect matching .pkg receipts and external files
+purgekit uninstall "Spotify" --dry-run     # Preview an uninstall safely
+purgekit uninstall "App" --mode advanced --admin --forget-pkgs
+purgekit orphans --min-kb 100              # Find orphaned leftovers from removed apps
+purgekit history --detail 1                # Inspect the latest removal manifest
+```
+
+## Full Disk Access (Recommended)
+
+If `purgekit doctor` reports missing **Full Disk Access**, some TCC-protected paths (such as `~/Library/Cookies`, `~/Library/Safari`, or `~/Library/Mail`) cannot be scanned. Grant Full Disk Access to your terminal app under **System Settings → Privacy & Security → Full Disk Access** for complete scans.
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+pytest -v
+```
+
+## License
 
 [MIT](LICENSE)
