@@ -37,9 +37,9 @@ dev = [
 purgekit = "purgekit.cli:app"
 
 [project.urls]
-Homepage = "https://github.com/furkanyild09/PurgeKit"
-Repository = "https://github.com/furkanyild09/PurgeKit"
-Issues = "https://github.com/furkanyild09/PurgeKit/issues"
+Homepage = "https://github.com/jebidayyah/PurgeKit"
+Repository = "https://github.com/jebidayyah/PurgeKit"
+Issues = "https://github.com/jebidayyah/PurgeKit/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_URL="https://github.com/furkanyild09/PurgeKit.git"
+REPO_URL="https://github.com/jebidayyah/PurgeKit.git"
 INSTALL_ROOT="${PURGEKIT_HOME:-$HOME/.purgekit}"
 VENV_DIR="$INSTALL_ROOT/venv"
 BIN_DIR="$HOME/.local/bin"

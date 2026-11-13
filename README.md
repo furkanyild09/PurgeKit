@@ -1,6 +1,6 @@
 # PurgeKit
 
-[![CI](https://github.com/furkanyild09/PurgeKit/actions/workflows/ci.yml/badge.svg)](https://github.com/furkanyild09/PurgeKit/actions/workflows/ci.yml)
+[![CI](https://github.com/jebidayyah/PurgeKit/actions/workflows/ci.yml/badge.svg)](https://github.com/jebidayyah/PurgeKit/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A smart application uninstaller and deep leftover scanner for **macOS** (CLI & interactive TUI), inspired by **Revo Uninstaller**.
@@ -34,7 +34,7 @@ A smart application uninstaller and deep leftover scanner for **macOS** (CLI & i
 Install directly from GitHub on macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/furkanyild09/PurgeKit/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jebidayyah/PurgeKit/main/install.sh | bash
 ```
 
 Then just run:
@@ -47,12 +47,12 @@ purgekit
 
 Run instantly without installing (requires `uv`):
 ```bash
-uvx --from git+https://github.com/furkanyild09/PurgeKit purgekit
+uvx --from git+https://github.com/jebidayyah/PurgeKit purgekit
 ```
 
 Or install globally with `pipx`:
 ```bash
-pipx install git+https://github.com/furkanyild09/PurgeKit
+pipx install git+https://github.com/jebidayyah/PurgeKit
 purgekit
 ```
 
@@ -60,7 +60,7 @@ purgekit
 <summary>Manual install from source</summary>
 
 ```bash
-git clone https://github.com/furkanyild09/PurgeKit.git
+git clone https://github.com/jebidayyah/PurgeKit.git
 cd PurgeKit
 python3 -m venv .venv
 source .venv/bin/activate

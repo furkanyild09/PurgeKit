@@ -34,7 +34,7 @@ from purgekit.watcher import (
     scan_trashed_app_leftovers,
 )
 
-REPO_GIT_URL = "git+https://github.com/furkanyild09/PurgeKit.git"
+REPO_GIT_URL = "git+https://github.com/jebidayyah/PurgeKit.git"
 
 app = typer.Typer(
     name="purgekit",
